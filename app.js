@@ -38,6 +38,33 @@
     }
   }
 
+  function loadImage(b64) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error("image decode")); };
+      img.src = "data:image/jpeg;base64," + b64;
+    });
+  }
+
+  // Ask the Worker for a real picture for each image element. Returns true if any failed.
+  async function addImages(spec) {
+    if (!PLANNER_URL || spec.fallback) return false;
+    var failed = false;
+    for (var i = 0; i < spec.elements.length; i++) {
+      var e = spec.elements[i];
+      if (e.kind !== "image" || !e.description) continue;
+      try {
+        var fd = new FormData(); fd.append("description", e.description);
+        var res = await fetch(PLANNER_URL.replace(/\/+$/, "") + "/image", { method: "POST", body: fd });
+        if (!res.ok) throw new Error("image " + res.status);
+        var data = await res.json();
+        e._img = await loadImage(data.image);
+      } catch (_) { failed = true; }
+    }
+    return failed;
+  }
+
   // --------------------------------------------------------------- rendering
   function makeCanvas(w, h) {
     var c = document.createElement("canvas");
@@ -98,7 +125,19 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  var RENDER = { background: renderBackground, shape: renderShape, text: renderText, image: renderImagePlaceholder };
+  // Real generated picture (cover-fit, rounded corners); falls back to the placeholder when there is none.
+  function renderImage(e) {
+    if (!e._img) return renderImagePlaceholder(e);
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = 24, W = c.width, H = c.height;
+    g.beginPath();
+    g.moveTo(r, 0); g.arcTo(W, 0, W, H, r); g.arcTo(W, H, 0, H, r); g.arcTo(0, H, 0, 0, r); g.arcTo(0, 0, W, 0, r);
+    g.closePath(); g.clip();
+    var k = Math.max(W / e._img.width, H / e._img.height), dw = e._img.width * k, dh = e._img.height * k;
+    g.drawImage(e._img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  var RENDER = { background: renderBackground, shape: renderShape, text: renderText, image: renderImage };
 
   // --------------------------------------------------------------------- PSD
   function specToPsd(spec) {
@@ -147,6 +186,8 @@
     $("go").disabled = true; show("جاري التوليد...");
     try {
       var spec = await plan(prompt, file);
+      show("جاري توليد الصورة...");
+      var imgFailed = await addImages(spec);
       if (document.fonts && document.fonts.ready) await document.fonts.ready;
       var bytes = specToPsd(spec);
       if (blobUrl) URL.revokeObjectURL(blobUrl);
@@ -155,9 +196,11 @@
       var a = document.createElement("a");
       a.id = "download"; a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
       a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
-      if (spec.fallback) {
+      if (spec.fallback || imgFailed) {
         var box = document.createElement("div"), note = document.createElement("p");
-        note.textContent = "الذكاء الاصطناعي غير متاح دابا (يمكن وصل الحد اليومي)، فاستعملنا تصميماً تجريبياً.";
+        note.textContent = spec.fallback
+          ? "الذكاء الاصطناعي غير متاح دابا (يمكن وصل الحد اليومي)، فاستعملنا تصميماً تجريبياً."
+          : "تعذر توليد الصورة (يمكن وصل الحد اليومي)، فوضعنا مربعاً مؤقتاً مكانها.";
         box.appendChild(a); box.appendChild(note); show(box);
       } else show(a);
     } catch (err) {
