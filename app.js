@@ -24,12 +24,18 @@
 
   async function plan(prompt, imageFile) {
     if (!PLANNER_URL) return demoSpec(prompt);
-    var fd = new FormData();
-    if (prompt) fd.append("prompt", prompt);
-    if (imageFile) fd.append("image", imageFile);
-    var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
-    if (!res.ok) throw new Error("planner " + res.status);
-    return await res.json();
+    try {
+      var fd = new FormData();
+      if (prompt) fd.append("prompt", prompt);
+      if (imageFile) fd.append("image", imageFile);
+      var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
+      if (!res.ok) throw new Error("planner " + res.status);
+      var spec = await res.json();
+      if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
+      return spec;
+    } catch (_) {
+      var d = demoSpec(prompt); d.fallback = true; return d; // AI unavailable -> offline demo design
+    }
   }
 
   // --------------------------------------------------------------- rendering
@@ -149,7 +155,11 @@
       var a = document.createElement("a");
       a.id = "download"; a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
       a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
-      show(a);
+      if (spec.fallback) {
+        var box = document.createElement("div"), note = document.createElement("p");
+        note.textContent = "الذكاء الاصطناعي غير متاح دابا (يمكن وصل الحد اليومي)، فاستعملنا تصميماً تجريبياً.";
+        box.appendChild(a); box.appendChild(note); show(box);
+      } else show(a);
     } catch (err) {
       show("وقع خطأ: " + err.message, true);
     } finally { $("go").disabled = false; }
