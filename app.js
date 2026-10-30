@@ -7,6 +7,7 @@
   // Later: put the URL of the Cloudflare Worker that talks to the AI model.
   var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
   var DAILY_LIMIT = 3;
+  var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
 
   // ----------------------------------------------------------------- planner
   function demoSpec(prompt) {
@@ -22,6 +23,15 @@
     };
   }
 
+  // Reads the message the server sends with a 429 answer.
+  async function limitMessage(res) {
+    try {
+      var j = await res.json();
+      if (j && typeof j.message === "string" && j.message) return j.message;
+    } catch (_) {}
+    return LIMIT_FALLBACK_MSG;
+  }
+
   async function plan(prompt, imageFile) {
     if (!PLANNER_URL) return demoSpec(prompt);
     try {
@@ -29,6 +39,7 @@
       if (prompt) fd.append("prompt", prompt);
       if (imageFile) fd.append("image", imageFile);
       var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
+      if (res.status === 429) return { limited: true, message: await limitMessage(res) };
       if (!res.ok) throw new Error("planner " + res.status);
       var spec = await res.json();
       if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
@@ -47,22 +58,27 @@
     });
   }
 
-  // Ask the Worker for a real picture for each image element. Returns true if any failed.
+  // Ask the Worker for a real picture for each image element.
+  // Returns { failed: true/false, limitMsg: server message or "" }.
   async function addImages(spec) {
-    if (!PLANNER_URL || spec.fallback) return false;
-    var failed = false;
+    var out = { failed: false, limitMsg: "" };
+    if (!PLANNER_URL || spec.fallback) return out;
     for (var i = 0; i < spec.elements.length; i++) {
       var e = spec.elements[i];
       if (e.kind !== "image" || !e.description) continue;
       try {
         var fd = new FormData(); fd.append("description", e.description);
         var res = await fetch(PLANNER_URL.replace(/\/+$/, "") + "/image", { method: "POST", body: fd });
+        if (res.status === 429) {
+          out.failed = true; out.limitMsg = await limitMessage(res);
+          break;
+        }
         if (!res.ok) throw new Error("image " + res.status);
         var data = await res.json();
         e._img = await loadImage(data.image);
-      } catch (_) { failed = true; }
+      } catch (_) { out.failed = true; }
     }
-    return failed;
+    return out;
   }
 
   // --------------------------------------------------------------- rendering
@@ -106,7 +122,7 @@
     var c = makeCanvas(Math.ceil(widest) + pad * 2, lines.length * lh + pad * 2), g = c.getContext("2d");
     g.font = "bold " + size + "px " + fontFamily;
     g.fillStyle = e.text_color || "#000000"; g.textBaseline = "top";
-    var rtl = /[֐-ࣿ]/.test(e.text || "");
+    var rtl = /[\u0590-\u08FF]/.test(e.text || "");
     g.direction = rtl ? "rtl" : "ltr"; g.textAlign = rtl ? "right" : "left";
     lines.forEach(function (l, i) { g.fillText(l, rtl ? c.width - pad : pad, pad + i * lh); });
     return { canvas: c, x: e.x - pad, y: e.y - pad };
@@ -186,8 +202,9 @@
     $("go").disabled = true; show("جاري التوليد...");
     try {
       var spec = await plan(prompt, file);
+      if (spec.limited) { show(spec.message, true); return; } // server said no: show its message and stop
       show("جاري توليد الصورة...");
-      var imgFailed = await addImages(spec);
+      var imgs = await addImages(spec);
       if (document.fonts && document.fonts.ready) await document.fonts.ready;
       var bytes = specToPsd(spec);
       if (blobUrl) URL.revokeObjectURL(blobUrl);
@@ -196,11 +213,15 @@
       var a = document.createElement("a");
       a.id = "download"; a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
       a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
-      if (spec.fallback || imgFailed) {
+      if (spec.fallback || imgs.failed) {
         var box = document.createElement("div"), note = document.createElement("p");
-        note.textContent = spec.fallback
-          ? "الذكاء الاصطناعي غير متاح دابا (يمكن وصل الحد اليومي)، فاستعملنا تصميماً تجريبياً."
-          : "تعذر توليد الصورة (يمكن وصل الحد اليومي)، فوضعنا مربعاً مؤقتاً مكانها.";
+        if (spec.fallback) {
+          note.textContent = "الذكاء الاصطناعي غير متاح دابا، فاستعملنا تصميماً تجريبياً.";
+        } else if (imgs.limitMsg) {
+          note.textContent = imgs.limitMsg + " (وضعنا مربعاً مؤقتاً مكان الصورة.)";
+        } else {
+          note.textContent = "تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها.";
+        }
         box.appendChild(a); box.appendChild(note); show(box);
       } else show(a);
     } catch (err) {
