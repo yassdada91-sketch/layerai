@@ -4,7 +4,7 @@
 
   // ------------------------------------------------------------------ config
   var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
-  var DAILY_LIMIT = 3;
+  var DAILY_LIMIT = 10; // TEMPORARY for testing: put back to 3 before going public
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
 
   // ----------------------------------------------------------------- planner
