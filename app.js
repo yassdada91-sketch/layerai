@@ -140,9 +140,21 @@
       d[k * 4 + 3] = al;
     }
     var frac = opaque / n;
-    if (frac < 0.06 || frac > 0.97) return false; // nothing or everything removed: keep the original
+    if (frac < 0.03 || frac > 0.97) return false; // nothing or everything removed: keep the original
     g.putImageData(id, 0, 0);
     return true;
+  }
+
+  // Bounding box of the visible part (alpha > 40) of a canvas, or null.
+  function visibleBox(canvas) {
+    var W = canvas.width, H = canvas.height, d = canvas.getContext("2d").getImageData(0, 0, W, H).data;
+    var x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
+      if (d[(y * W + x) * 4 + 3] > 40) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
   }
 
   function renderBackground(e) {
@@ -237,20 +249,35 @@
     g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
   }
 
+  // Cut-out: remove the plain background on a work copy (max 768px), crop to the visible part,
+  // then scale it to fill the layer box (with a small margin). Returns a canvas of e.w x e.h, or null.
+  function cutOut(e) {
+    var img = e._img, s = Math.min(1, 768 / Math.max(img.width, img.height));
+    var work = makeCanvas(img.width * s, img.height * s), wg = work.getContext("2d");
+    wg.drawImage(img, 0, 0, work.width, work.height);
+    if (!removeBackground(work)) return null;
+    var box = visibleBox(work);
+    if (!box || box.w < 20 || box.h < 20) return null;
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), m = 20;
+    var k = Math.min((c.width - m * 2) / box.w, (c.height - m * 2) / box.h);
+    var dw = box.w * k, dh = box.h * k;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(work, box.x, box.y, box.w, box.h, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+    return c;
+  }
+
   function renderImage(e) {
     if (e._layer) return e._layer;
     if (!e._img) return renderImagePlaceholder(e);
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), W = c.width, H = c.height;
-    var cut = false;
+    var c = null;
     if (e.cutout) {
-      drawCover(g, e._img, W, H);
-      cut = removeBackground(c);
-      if (!cut) g.clearRect(0, 0, W, H); // failed: fall back to the normal picture below
+      c = cutOut(e);
+      if (c) e._cut = c;
     }
-    if (cut) {
-      e._cut = c;
-    } else {
-      g.save(); roundRectPath(g, 0, 0, W, H, 24); g.clip(); drawCover(g, e._img, W, H); g.restore();
+    if (!c) {
+      c = makeCanvas(e.w, e.h);
+      var g = c.getContext("2d");
+      g.save(); roundRectPath(g, 0, 0, c.width, c.height, 24); g.clip(); drawCover(g, e._img, c.width, c.height); g.restore();
     }
     e._layer = { canvas: c, x: e.x, y: e.y };
     return e._layer;
