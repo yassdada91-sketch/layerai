@@ -6,6 +6,7 @@
   var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
   var DAILY_LIMIT = 10; // TEMPORARY for testing: put back to 3 before going public
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
+  var currentSpec = null;
 
   // ----------------------------------------------------------------- planner
   function demoSpec(prompt) {
@@ -63,6 +64,7 @@
       if (e.kind !== "image" || !e.description) continue;
       try {
         var fd = new FormData(); fd.append("description", e.description);
+        if (e.cutout) fd.append("cutout", "1");
         var res = await fetch(PLANNER_URL.replace(/\/+$/, "") + "/image", { method: "POST", body: fd });
         if (res.status === 429) {
           out.failed = true; out.limitMsg = await limitMessage(res);
@@ -89,6 +91,60 @@
     g.arcTo(x, y + H, x, y, r); g.arcTo(x, y, x + W, y, r); g.closePath();
   }
 
+  // Removes the plain background of a picture (green screen or white), in place.
+  // Returns false (and changes nothing) if the result looks wrong.
+  function removeBackground(canvas) {
+    var W = canvas.width, H = canvas.height, g = canvas.getContext("2d");
+    var id = g.getImageData(0, 0, W, H), d = id.data, n = W * H;
+    // Background colour = average of the four corners (6x6 blocks).
+    var sr = 0, sg = 0, sb = 0, cnt = 0, bs = 6, cx = [0, W - bs], cy = [0, H - bs];
+    for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++)
+      for (var y = cy[b]; y < cy[b] + bs; y++) for (var x = cx[a]; x < cx[a] + bs; x++) {
+        var p = (y * W + x) * 4; sr += d[p]; sg += d[p + 1]; sb += d[p + 2]; cnt++;
+      }
+    var br = sr / cnt, bg = sg / cnt, bb = sb / cnt;
+    var chroma = (Math.max(br, bg, bb) - Math.min(br, bg, bb)) > 80; // green screen vs. white/grey
+    var T1 = chroma ? 60 : 22, T2 = chroma ? 130 : 55;               // fully background / fully subject
+    function dist(i) {
+      var dr = d[i] - br, dg = d[i + 1] - bg, db = d[i + 2] - bb;
+      return Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+    var alpha = new Uint8ClampedArray(n); alpha.fill(255);
+    function setAlpha(idx) {
+      var dd = dist(idx * 4);
+      alpha[idx] = dd <= T1 ? 0 : Math.round((dd - T1) / (T2 - T1) * 255);
+    }
+    if (chroma) {
+      for (var i = 0; i < n; i++) if (dist(i * 4) < T2) setAlpha(i);
+    } else {
+      // white/grey background: only what is connected to the border is background
+      var seen = new Uint8Array(n), stack = new Int32Array(n), sp = 0;
+      function push(idx) { if (!seen[idx] && dist(idx * 4) < T2) { seen[idx] = 1; stack[sp++] = idx; } }
+      for (var x2 = 0; x2 < W; x2++) { push(x2); push((H - 1) * W + x2); }
+      for (var y2 = 0; y2 < H; y2++) { push(y2 * W); push(y2 * W + W - 1); }
+      while (sp > 0) {
+        var idx = stack[--sp]; setAlpha(idx);
+        var px = idx % W, py = (idx - px) / W;
+        if (px > 0) push(idx - 1); if (px < W - 1) push(idx + 1);
+        if (py > 0) push(idx - W); if (py < H - 1) push(idx + W);
+      }
+    }
+    var opaque = 0;
+    for (var k = 0; k < n; k++) {
+      var al = alpha[k];
+      if (al > 128) opaque++;
+      if (chroma && al > 0 && al < 255) { // remove green spill on the edge
+        var q = k * 4, m = Math.max(d[q], d[q + 2]);
+        if (d[q + 1] > m) d[q + 1] = m;
+      }
+      d[k * 4 + 3] = al;
+    }
+    var frac = opaque / n;
+    if (frac < 0.06 || frac > 0.97) return false; // nothing or everything removed: keep the original
+    g.putImageData(id, 0, 0);
+    return true;
+  }
+
   function renderBackground(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
     if (e.color2) {
@@ -106,7 +162,6 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  // Filled ellipse on a transparent layer (decoration).
   function renderCircle(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
     g.fillStyle = e.color || "#ffffff";
@@ -116,7 +171,6 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  // Rounded outline only (transparent inside), drawn around the image.
   function renderFrame(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), lw = e.line || 8;
     g.strokeStyle = e.color || "#ffffff"; g.lineWidth = lw;
@@ -125,14 +179,24 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  // Soft drop shadow only (the shape itself is drawn off-canvas, so just the blur stays).
+  // Soft drop shadow. With e.of = id of an image whose background was removed, the shadow follows its shape;
+  // otherwise it is the shadow of a rounded rectangle. Only the blur is kept (the shape itself is drawn off-canvas).
   function renderShadow(e) {
     var pad = 80, c = makeCanvas(e.w + pad * 2, e.h + pad * 2), g = c.getContext("2d");
     g.shadowColor = e.color || "rgba(0,0,0,0.9)";
     g.shadowBlur = 40; g.shadowOffsetX = 10000; g.shadowOffsetY = 20;
-    g.fillStyle = "#000000";
-    roundRectPath(g, pad - 10000, pad, e.w, e.h, 24);
-    g.fill();
+    var target = null;
+    if (e.of && currentSpec) {
+      for (var i = 0; i < currentSpec.elements.length; i++) if (currentSpec.elements[i].id === e.of) target = currentSpec.elements[i];
+    }
+    if (target) renderImage(target); // makes sure the cut-out exists
+    if (target && target._cut) {
+      g.drawImage(target._cut, pad - 10000, pad);
+    } else {
+      g.fillStyle = "#000000";
+      roundRectPath(g, pad - 10000, pad, e.w, e.h, 24);
+      g.fill();
+    }
     return { canvas: c, x: e.x - pad, y: e.y - pad };
   }
 
@@ -168,14 +232,28 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
+  function drawCover(g, img, W, H) {
+    var k = Math.max(W / img.width, H / img.height), dw = img.width * k, dh = img.height * k;
+    g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  }
+
   function renderImage(e) {
+    if (e._layer) return e._layer;
     if (!e._img) return renderImagePlaceholder(e);
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), W = c.width, H = c.height;
-    roundRectPath(g, 0, 0, W, H, 24);
-    g.clip();
-    var k = Math.max(W / e._img.width, H / e._img.height), dw = e._img.width * k, dh = e._img.height * k;
-    g.drawImage(e._img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    return { canvas: c, x: e.x, y: e.y };
+    var cut = false;
+    if (e.cutout) {
+      drawCover(g, e._img, W, H);
+      cut = removeBackground(c);
+      if (!cut) g.clearRect(0, 0, W, H); // failed: fall back to the normal picture below
+    }
+    if (cut) {
+      e._cut = c;
+    } else {
+      g.save(); roundRectPath(g, 0, 0, W, H, 24); g.clip(); drawCover(g, e._img, W, H); g.restore();
+    }
+    e._layer = { canvas: c, x: e.x, y: e.y };
+    return e._layer;
   }
 
   var RENDER = {
@@ -185,6 +263,7 @@
 
   // --------------------------------------------------------------------- PSD
   function specToPsd(spec) {
+    currentSpec = spec;
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
       var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
