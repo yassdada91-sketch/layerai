@@ -3,8 +3,6 @@
   "use strict";
 
   // ------------------------------------------------------------------ config
-  // Leave empty to use the built-in offline demo planner.
-  // Later: put the URL of the Cloudflare Worker that talks to the AI model.
   var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
   var DAILY_LIMIT = 3;
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
@@ -23,7 +21,6 @@
     };
   }
 
-  // Reads the message the server sends with a 429 answer.
   async function limitMessage(res) {
     try {
       var j = await res.json();
@@ -45,7 +42,7 @@
       if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
       return spec;
     } catch (_) {
-      var d = demoSpec(prompt); d.fallback = true; return d; // AI unavailable -> offline demo design
+      var d = demoSpec(prompt); d.fallback = true; return d;
     }
   }
 
@@ -58,8 +55,6 @@
     });
   }
 
-  // Ask the Worker for a real picture for each image element.
-  // Returns { failed: true/false, limitMsg: server message or "" }.
   async function addImages(spec) {
     var out = { failed: false, limitMsg: "" };
     if (!PLANNER_URL || spec.fallback) return out;
@@ -88,6 +83,12 @@
     return c;
   }
 
+  function roundRectPath(g, x, y, W, H, r) {
+    g.beginPath();
+    g.moveTo(x + r, y); g.arcTo(x + W, y, x + W, y + H, r); g.arcTo(x + W, y + H, x, y + H, r);
+    g.arcTo(x, y + H, x, y, r); g.arcTo(x, y, x + W, y, r); g.closePath();
+  }
+
   function renderBackground(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
     if (e.color2) {
@@ -105,7 +106,36 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  // Real text drawn by the browser -> Arabic shaping and right-to-left work natively.
+  // Filled ellipse on a transparent layer (decoration).
+  function renderCircle(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
+    g.fillStyle = e.color || "#ffffff";
+    g.beginPath();
+    g.ellipse(c.width / 2, c.height / 2, c.width / 2, c.height / 2, 0, 0, Math.PI * 2);
+    g.fill();
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Rounded outline only (transparent inside), drawn around the image.
+  function renderFrame(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), lw = e.line || 8;
+    g.strokeStyle = e.color || "#ffffff"; g.lineWidth = lw;
+    roundRectPath(g, lw / 2, lw / 2, c.width - lw, c.height - lw, 24);
+    g.stroke();
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Soft drop shadow only (the shape itself is drawn off-canvas, so just the blur stays).
+  function renderShadow(e) {
+    var pad = 80, c = makeCanvas(e.w + pad * 2, e.h + pad * 2), g = c.getContext("2d");
+    g.shadowColor = e.color || "rgba(0,0,0,0.9)";
+    g.shadowBlur = 40; g.shadowOffsetX = 10000; g.shadowOffsetY = 20;
+    g.fillStyle = "#000000";
+    roundRectPath(g, pad - 10000, pad, e.w, e.h, 24);
+    g.fill();
+    return { canvas: c, x: e.x - pad, y: e.y - pad };
+  }
+
   function renderText(e) {
     var size = e.font_size || 48, pad = Math.round(size * 0.15);
     var fontFamily = '"Segoe UI", Tahoma, "Noto Sans Arabic", "DejaVu Sans", Arial, sans-serif';
@@ -128,38 +158,38 @@
     return { canvas: c, x: e.x - pad, y: e.y - pad };
   }
 
-  // Placeholder until an image-generation backend is connected.
   function renderImagePlaceholder(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
     g.fillStyle = "rgba(255,255,255,0.18)"; g.strokeStyle = "rgba(255,255,255,0.8)"; g.lineWidth = 4;
-    var r = 24, w = c.width - 4, h = c.height - 4;
-    g.beginPath();
-    g.moveTo(2 + r, 2); g.arcTo(2 + w, 2, 2 + w, 2 + h, r); g.arcTo(2 + w, 2 + h, 2, 2 + h, r);
-    g.arcTo(2, 2 + h, 2, 2, r); g.arcTo(2, 2, 2 + w, 2, r); g.closePath(); g.fill(); g.stroke();
+    roundRectPath(g, 2, 2, c.width - 4, c.height - 4, 24);
+    g.fill(); g.stroke();
     g.fillStyle = "#fff"; g.font = "20px sans-serif"; g.textBaseline = "top";
     g.fillText(String(e.description || e.name).slice(0, 36), 16, 16);
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  // Real generated picture (cover-fit, rounded corners); falls back to the placeholder when there is none.
   function renderImage(e) {
     if (!e._img) return renderImagePlaceholder(e);
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = 24, W = c.width, H = c.height;
-    g.beginPath();
-    g.moveTo(r, 0); g.arcTo(W, 0, W, H, r); g.arcTo(W, H, 0, H, r); g.arcTo(0, H, 0, 0, r); g.arcTo(0, 0, W, 0, r);
-    g.closePath(); g.clip();
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), W = c.width, H = c.height;
+    roundRectPath(g, 0, 0, W, H, 24);
+    g.clip();
     var k = Math.max(W / e._img.width, H / e._img.height), dw = e._img.width * k, dh = e._img.height * k;
     g.drawImage(e._img, (W - dw) / 2, (H - dh) / 2, dw, dh);
     return { canvas: c, x: e.x, y: e.y };
   }
 
-  var RENDER = { background: renderBackground, shape: renderShape, text: renderText, image: renderImage };
+  var RENDER = {
+    background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
+    circle: renderCircle, frame: renderFrame, shadow: renderShadow
+  };
 
   // --------------------------------------------------------------------- PSD
   function specToPsd(spec) {
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
       var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      var op = typeof e.opacity === "number" ? Math.max(0, Math.min(1, e.opacity)) : 1;
+      if (op < 1) { for (var i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * op); }
       return { name: e.name || e.id || "Layer", left: Math.round(r.x), top: Math.round(r.y), width: c.width, height: c.height, rgba: data };
     });
     return PSD.buildPsd(spec.width, spec.height, layers);
@@ -202,7 +232,7 @@
     $("go").disabled = true; show("جاري التوليد...");
     try {
       var spec = await plan(prompt, file);
-      if (spec.limited) { show(spec.message, true); return; } // server said no: show its message and stop
+      if (spec.limited) { show(spec.message, true); return; }
       show("جاري توليد الصورة...");
       var imgs = await addImages(spec);
       if (document.fonts && document.fonts.ready) await document.fonts.ready;
