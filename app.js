@@ -145,14 +145,33 @@
     for (var k = 0; k < n; k++) {
       var al = alpha[k];
       if (al > 128) opaque++;
-      if (chroma && al > 0 && al < 255) { // remove green spill on the edge
-        var q = k * 4, m = Math.max(d[q], d[q + 2]);
-        if (d[q + 1] > m) d[q + 1] = m;
-      }
       d[k * 4 + 3] = al;
     }
     var frac = opaque / n;
     if (frac < 0.03 || frac > 0.97) return false; // nothing or everything removed: keep the original
+
+    if (chroma) {
+      // Green clean-up. Near the outer edge of the subject (within 12px of a transparent pixel):
+      //  - a pixel that is clearly green (green well above red and blue) is removed;
+      //  - other pixels get their green reduced to max(red, blue), which removes the green fringe.
+      var R = 12, near = new Uint8Array(n);
+      for (var yy = 0; yy < H; yy++) {
+        for (var xx = 0; xx < W; xx++) {
+          var ii = yy * W + xx;
+          if (alpha[ii] >= 40) continue;
+          var y0 = Math.max(0, yy - R), y1 = Math.min(H - 1, yy + R), x0 = Math.max(0, xx - R), x1 = Math.min(W - 1, xx + R);
+          for (var ny = y0; ny <= y1; ny++) for (var nx = x0; nx <= x1; nx++) near[ny * W + nx] = 1;
+        }
+      }
+      for (var j = 0; j < n; j++) {
+        if (d[j * 4 + 3] === 0) continue;
+        var o = j * 4, r = d[o], gg = d[o + 1], bl = d[o + 2], mx = Math.max(r, bl);
+        if (gg > mx) {
+          if (near[j] && gg > mx + 40) d[o + 3] = 0;                 // clearly green and near the edge: drop it
+          else if (near[j] || d[o + 3] < 255) d[o + 1] = mx;         // fringe: remove the green tint
+        }
+      }
+    }
     g.putImageData(id, 0, 0);
     return true;
   }
