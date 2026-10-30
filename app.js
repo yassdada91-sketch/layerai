@@ -42,8 +42,10 @@
       var spec = await res.json();
       if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
       return spec;
-    } catch (_) {
-      var d = demoSpec(prompt); d.fallback = true; return d;
+    } catch (err) {
+      var d = demoSpec(prompt); d.fallback = true;
+      d.reason = (err && err.message) || "unknown";
+      return d;
     }
   }
 
@@ -56,8 +58,10 @@
     });
   }
 
+  // Ask the Worker for a real picture for each image element.
+  // Returns { failed, limitMsg, reason } (reason = short technical cause of the first failure).
   async function addImages(spec) {
-    var out = { failed: false, limitMsg: "" };
+    var out = { failed: false, limitMsg: "", reason: "" };
     if (!PLANNER_URL || spec.fallback) return out;
     for (var i = 0; i < spec.elements.length; i++) {
       var e = spec.elements[i];
@@ -70,10 +74,18 @@
           out.failed = true; out.limitMsg = await limitMessage(res);
           break;
         }
-        if (!res.ok) throw new Error("image " + res.status);
+        if (!res.ok) {
+          var why = "";
+          try { var j = await res.json(); why = j && j.error ? String(j.error) : ""; } catch (_) {}
+          throw new Error("image " + res.status + (why ? " " + why : ""));
+        }
         var data = await res.json();
+        if (!data || !data.image) throw new Error("no image in answer");
         e._img = await loadImage(data.image);
-      } catch (_) { out.failed = true; }
+      } catch (err) {
+        out.failed = true;
+        if (!out.reason) out.reason = (err && err.message) || "unknown";
+      }
     }
     return out;
   }
@@ -349,16 +361,23 @@
       var a = document.createElement("a");
       a.id = "download"; a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
       a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
-      if (spec.fallback || imgs.failed) {
-        var box = document.createElement("div"), note = document.createElement("p");
-        if (spec.fallback) {
-          note.textContent = "الذكاء الاصطناعي غير متاح دابا، فاستعملنا تصميماً تجريبياً.";
-        } else if (imgs.limitMsg) {
-          note.textContent = imgs.limitMsg + " (وضعنا مربعاً مؤقتاً مكان الصورة.)";
-        } else {
-          note.textContent = "تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها.";
-        }
-        box.appendChild(a); box.appendChild(note); show(box);
+
+      var notes = [];
+      if (spec.fallback) {
+        notes.push("الذكاء الاصطناعي غير متاح دابا، فاستعملنا تصميماً تجريبياً." + (spec.reason ? " (" + spec.reason + ")" : ""));
+      } else if (imgs.limitMsg) {
+        notes.push(imgs.limitMsg + " (وضعنا مربعاً مؤقتاً مكان الصورة.)");
+      } else if (imgs.failed) {
+        notes.push("تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها." + (imgs.reason ? " (" + imgs.reason + ")" : ""));
+      }
+      var cutFailed = spec.elements.some(function (e) { return e.cutout && e._img && !e._cut; });
+      if (cutFailed) notes.push("تعذر قص خلفية الصورة، فتركناها بخلفيتها.");
+
+      if (notes.length) {
+        var box = document.createElement("div");
+        box.appendChild(a);
+        notes.forEach(function (t) { var p = document.createElement("p"); p.textContent = t; box.appendChild(p); });
+        show(box);
       } else show(a);
     } catch (err) {
       show("وقع خطأ: " + err.message, true);
