@@ -4,7 +4,7 @@
 
   // ------------------------------------------------------------------ config
   var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
-  var DAILY_LIMIT = 10; // TEMPORARY for testing: put back to 3 before going public
+  var DAILY_LIMIT = 100000; // limit effectively OFF while developing; put back to 3 before going public
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
   var currentSpec = null;
 
@@ -61,12 +61,15 @@
   }
 
   // One image request, with a single automatic retry after a network failure or a 5xx answer.
-  async function fetchImage(description, cutout) {
+  // cutout: falsy (keep the picture as it is), "green" / true (green screen) or "magenta" (magenta screen).
+  // style: "background" for a full scene background.
+  async function fetchImage(description, cutout, style) {
     var url = PLANNER_URL.replace(/\/+$/, "") + "/image", lastErr = null, res = null;
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
         var fd = new FormData(); fd.append("description", description);
-        if (cutout) fd.append("cutout", "1");
+        if (cutout) fd.append("cutout", cutout === "magenta" ? "magenta" : "green");
+        if (style) fd.append("style", style);
         res = await fetch(url, { method: "POST", body: fd });
         if (res.status >= 500 && attempt < 1) { await sleep(1500); continue; }
         return res;
@@ -79,16 +82,18 @@
     throw new Error(((lastErr && lastErr.message) || "network") + " (2 attempts)");
   }
 
-  // Ask the Worker for a real picture for each image element.
+  // Ask the Worker for a real picture for each image element (one after the other).
+  // progress(i, total) is called before each request.
   // Returns { failed, limitMsg, reason } (reason = short technical cause of the first failure).
-  async function addImages(spec) {
+  async function addImages(spec, progress) {
     var out = { failed: false, limitMsg: "", reason: "" };
     if (!PLANNER_URL || spec.fallback) return out;
-    for (var i = 0; i < spec.elements.length; i++) {
-      var e = spec.elements[i];
-      if (e.kind !== "image" || !e.description) continue;
+    var todo = spec.elements.filter(function (e) { return e.kind === "image" && e.description; });
+    for (var i = 0; i < todo.length; i++) {
+      var e = todo[i];
+      if (progress) progress(i + 1, todo.length);
       try {
-        var res = await fetchImage(e.description, e.cutout);
+        var res = await fetchImage(e.description, e.cutout, e.style);
         if (res.status === 429) {
           out.failed = true; out.limitMsg = await limitMessage(res);
           break;
@@ -122,7 +127,7 @@
     g.arcTo(x, y + H, x, y, r); g.arcTo(x, y, x + W, y, r); g.closePath();
   }
 
-  // Removes the plain background of a picture (green screen or white), in place.
+  // Removes the plain background of a picture (green screen, magenta screen or white), in place.
   // Returns false (and changes nothing) if the result looks wrong.
   function removeBackground(canvas) {
     var W = canvas.width, H = canvas.height, g = canvas.getContext("2d");
@@ -134,7 +139,7 @@
         var p = (y * W + x) * 4; sr += d[p]; sg += d[p + 1]; sb += d[p + 2]; cnt++;
       }
     var br = sr / cnt, bg = sg / cnt, bb = sb / cnt;
-    var chroma = (Math.max(br, bg, bb) - Math.min(br, bg, bb)) > 80; // green screen vs. white/grey
+    var chroma = (Math.max(br, bg, bb) - Math.min(br, bg, bb)) > 80; // coloured screen vs. white/grey
     var T1 = chroma ? 60 : 22, T2 = chroma ? 130 : 55;               // fully background / fully subject
     function dist(i) {
       var dr = d[i] - br, dg = d[i + 1] - bg, db = d[i + 2] - bb;
@@ -169,45 +174,65 @@
     var frac = opaque / n;
     if (frac < 0.03 || frac > 0.97) return false; // nothing or everything removed: keep the original
 
-    if (chroma) {
-      // Step 1: remove green that is CONNECTED to the transparent background (green reflections, glow under the object).
-      // Starting from every transparent pixel, spread into neighbours that are clearly green (green well above red and blue).
-      // Green in the middle of the object is not reached, so it is kept. If more than 40% of the object would go, undo.
-      var seen2 = new Uint8Array(n), st2 = new Int32Array(n), sp2 = 0, removed = new Int32Array(n), rc = 0;
-      for (var s0 = 0; s0 < n; s0++) if (d[s0 * 4 + 3] < 40) { seen2[s0] = 1; st2[sp2++] = s0; }
-      function greenish(ix) {
-        var o2 = ix * 4, rr = d[o2], g2 = d[o2 + 1], b2 = d[o2 + 2];
-        return g2 > 90 && g2 > Math.max(rr, b2) + 30;
-      }
-      function spread(ix) {
-        if (!seen2[ix] && d[ix * 4 + 3] >= 40 && greenish(ix)) { seen2[ix] = 1; removed[rc++] = ix; st2[sp2++] = ix; }
-      }
-      while (sp2 > 0) {
-        var cur = st2[--sp2], cxx = cur % W, cyy = (cur - cxx) / W;
-        if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
-        if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
-      }
-      if (rc <= opaque * 0.4) {
-        for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
-      }
-
-      // Step 2: near the outer edge (within 12px of a transparent pixel), drop clearly green pixels
-      // and reduce the green tint of the others (green fringe).
-      var R = 12, near = new Uint8Array(n);
+    // Pixels within R px of a transparent pixel (the outer edge of the subject).
+    function markNear(R) {
+      var near = new Uint8Array(n);
       for (var yy = 0; yy < H; yy++) {
         for (var xx = 0; xx < W; xx++) {
-          var ii = yy * W + xx;
-          if (d[ii * 4 + 3] >= 40) continue;
+          if (d[(yy * W + xx) * 4 + 3] >= 40) continue;
           var y0 = Math.max(0, yy - R), y1 = Math.min(H - 1, yy + R), x0 = Math.max(0, xx - R), x1 = Math.min(W - 1, xx + R);
           for (var ny = y0; ny <= y1; ny++) for (var nx = x0; nx <= x1; nx++) near[ny * W + nx] = 1;
         }
       }
-      for (var j = 0; j < n; j++) {
-        if (d[j * 4 + 3] === 0) continue;
-        var o = j * 4, r = d[o], gg = d[o + 1], bl = d[o + 2], mx = Math.max(r, bl);
-        if (gg > mx) {
-          if (near[j] && gg > mx + 40) d[o + 3] = 0;                 // clearly green and near the edge: drop it
-          else if (near[j] || d[o + 3] < 255) d[o + 1] = mx;         // fringe: remove the green tint
+      return near;
+    }
+
+    if (chroma) {
+      var keyGreen = bg > br + 40 && bg > bb + 40;     // green screen
+      var keyMagenta = br > bg + 40 && bb > bg + 40;   // magenta screen (used for green plants)
+
+      if (keyGreen) {
+        // Step 1: remove green CONNECTED to the transparent background (green reflections, glow under the object).
+        // Green in the middle of the object is not reached, so it is kept. If more than 40% of the object would go, undo.
+        var seen2 = new Uint8Array(n), st2 = new Int32Array(n), sp2 = 0, removed = new Int32Array(n), rc = 0;
+        for (var s0 = 0; s0 < n; s0++) if (d[s0 * 4 + 3] < 40) { seen2[s0] = 1; st2[sp2++] = s0; }
+        var greenish = function (ix) {
+          var o2 = ix * 4, rr = d[o2], g2 = d[o2 + 1], b2 = d[o2 + 2];
+          return g2 > 90 && g2 > Math.max(rr, b2) + 30;
+        };
+        var spread = function (ix) {
+          if (!seen2[ix] && d[ix * 4 + 3] >= 40 && greenish(ix)) { seen2[ix] = 1; removed[rc++] = ix; st2[sp2++] = ix; }
+        };
+        while (sp2 > 0) {
+          var cur = st2[--sp2], cxx = cur % W, cyy = (cur - cxx) / W;
+          if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
+          if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
+        }
+        if (rc <= opaque * 0.4) {
+          for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
+        }
+      }
+
+      if (keyGreen || keyMagenta) {
+        // Step 2: edge clean-up (within 12px of a transparent pixel, or half-transparent pixels).
+        var near = markNear(12);
+        for (var j = 0; j < n; j++) {
+          if (d[j * 4 + 3] === 0) continue;
+          var o = j * 4, r = d[o], gg = d[o + 1], bl = d[o + 2];
+          if (keyGreen) {
+            var mx = Math.max(r, bl);
+            if (gg > mx) {
+              if (near[j] && gg > mx + 40) d[o + 3] = 0;                 // clearly green and near the edge: drop it
+              else if (near[j] || d[o + 3] < 255) d[o + 1] = mx;         // fringe: remove the green tint
+            }
+          } else {
+            var lo = Math.min(r, bl);
+            if (lo > gg && (near[j] || d[o + 3] < 255)) {
+              var ex = lo - gg;
+              if (near[j] && ex > 50) d[o + 3] = 0;                      // clearly magenta and near the edge: drop it
+              else { d[o] = Math.round(r - ex * 0.6); d[o + 2] = Math.round(bl - ex * 0.6); } // fringe: remove the magenta tint
+            }
+          }
         }
       }
     }
@@ -320,7 +345,9 @@
   }
 
   // Cut-out: remove the plain background on a work copy (max 768px), crop to the visible part,
-  // then scale it to fill the layer box (with a small margin). Returns a canvas of e.w x e.h, or null.
+  // then fit it inside the layer box (with a small margin). Returns a canvas of e.w x e.h, or null.
+  //   e.align = "bottom": the object stands at the bottom of the box (instead of being centered).
+  //   e.mirror = true: the object is drawn in the left corner and mirrored in the right corner (e.g. plants framing a scene).
   function cutOut(e) {
     var img = e._img, s = Math.min(1, 768 / Math.max(img.width, img.height));
     var work = makeCanvas(img.width * s, img.height * s), wg = work.getContext("2d");
@@ -329,10 +356,18 @@
     var box = visibleBox(work);
     if (!box || box.w < 20 || box.h < 20) return null;
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), m = 20;
-    var k = Math.min((c.width - m * 2) / box.w, (c.height - m * 2) / box.h);
+    var boxW = e.mirror ? c.width / 2 : c.width;
+    var k = Math.min((boxW - m * 2) / box.w, (c.height - m * 2) / box.h);
     var dw = box.w * k, dh = box.h * k;
+    var dx = e.mirror ? 0 : (boxW - dw) / 2;
+    var dy = e.align === "bottom" ? c.height - dh - m : (c.height - dh) / 2;
     g.imageSmoothingQuality = "high";
-    g.drawImage(work, box.x, box.y, box.w, box.h, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+    g.drawImage(work, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
+    if (e.mirror) {
+      g.save(); g.translate(c.width, 0); g.scale(-1, 1);
+      g.drawImage(work, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
+      g.restore();
+    }
     return c;
   }
 
@@ -346,8 +381,11 @@
     }
     if (!c) {
       c = makeCanvas(e.w, e.h);
-      var g = c.getContext("2d");
-      g.save(); roundRectPath(g, 0, 0, c.width, c.height, 24); g.clip(); drawCover(g, e._img, c.width, c.height); g.restore();
+      var g = c.getContext("2d"), rad = typeof e.radius === "number" ? e.radius : 24;
+      g.save();
+      if (rad > 0) { roundRectPath(g, 0, 0, c.width, c.height, rad); g.clip(); }
+      drawCover(g, e._img, c.width, c.height);
+      g.restore();
     }
     e._layer = { canvas: c, x: e.x, y: e.y };
     return e._layer;
@@ -433,7 +471,9 @@
       var spec = await plan(prompt, file);
       if (spec.limited) { show(spec.message, true); return; }
       show("جاري توليد الصورة...");
-      var imgs = await addImages(spec);
+      var imgs = await addImages(spec, function (i, total) {
+        show("جاري توليد الصورة " + i + "/" + total + "...");
+      });
       if (document.fonts && document.fonts.ready) await document.fonts.ready;
       var bytes = specToPsd(spec);
       if (blobUrl) URL.revokeObjectURL(blobUrl);
