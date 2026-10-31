@@ -22,6 +22,8 @@
     };
   }
 
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
   async function limitMessage(res) {
     try {
       var j = await res.json();
@@ -58,6 +60,25 @@
     });
   }
 
+  // One image request, with a single automatic retry after a network failure or a 5xx answer.
+  async function fetchImage(description, cutout) {
+    var url = PLANNER_URL.replace(/\/+$/, "") + "/image", lastErr = null, res = null;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        var fd = new FormData(); fd.append("description", description);
+        if (cutout) fd.append("cutout", "1");
+        res = await fetch(url, { method: "POST", body: fd });
+        if (res.status >= 500 && attempt < 1) { await sleep(1500); continue; }
+        return res;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 1) await sleep(1500);
+      }
+    }
+    if (res) return res;
+    throw new Error(((lastErr && lastErr.message) || "network") + " (2 attempts)");
+  }
+
   // Ask the Worker for a real picture for each image element.
   // Returns { failed, limitMsg, reason } (reason = short technical cause of the first failure).
   async function addImages(spec) {
@@ -67,9 +88,7 @@
       var e = spec.elements[i];
       if (e.kind !== "image" || !e.description) continue;
       try {
-        var fd = new FormData(); fd.append("description", e.description);
-        if (e.cutout) fd.append("cutout", "1");
-        var res = await fetch(PLANNER_URL.replace(/\/+$/, "") + "/image", { method: "POST", body: fd });
+        var res = await fetchImage(e.description, e.cutout);
         if (res.status === 429) {
           out.failed = true; out.limitMsg = await limitMessage(res);
           break;
