@@ -170,14 +170,34 @@
     if (frac < 0.03 || frac > 0.97) return false; // nothing or everything removed: keep the original
 
     if (chroma) {
-      // Green clean-up. Near the outer edge of the subject (within 12px of a transparent pixel):
-      //  - a pixel that is clearly green (green well above red and blue) is removed;
-      //  - other pixels get their green reduced to max(red, blue), which removes the green fringe.
+      // Step 1: remove green that is CONNECTED to the transparent background (green reflections, glow under the object).
+      // Starting from every transparent pixel, spread into neighbours that are clearly green (green well above red and blue).
+      // Green in the middle of the object is not reached, so it is kept. If more than 40% of the object would go, undo.
+      var seen2 = new Uint8Array(n), st2 = new Int32Array(n), sp2 = 0, removed = new Int32Array(n), rc = 0;
+      for (var s0 = 0; s0 < n; s0++) if (d[s0 * 4 + 3] < 40) { seen2[s0] = 1; st2[sp2++] = s0; }
+      function greenish(ix) {
+        var o2 = ix * 4, rr = d[o2], g2 = d[o2 + 1], b2 = d[o2 + 2];
+        return g2 > 90 && g2 > Math.max(rr, b2) + 30;
+      }
+      function spread(ix) {
+        if (!seen2[ix] && d[ix * 4 + 3] >= 40 && greenish(ix)) { seen2[ix] = 1; removed[rc++] = ix; st2[sp2++] = ix; }
+      }
+      while (sp2 > 0) {
+        var cur = st2[--sp2], cxx = cur % W, cyy = (cur - cxx) / W;
+        if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
+        if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
+      }
+      if (rc <= opaque * 0.4) {
+        for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
+      }
+
+      // Step 2: near the outer edge (within 12px of a transparent pixel), drop clearly green pixels
+      // and reduce the green tint of the others (green fringe).
       var R = 12, near = new Uint8Array(n);
       for (var yy = 0; yy < H; yy++) {
         for (var xx = 0; xx < W; xx++) {
           var ii = yy * W + xx;
-          if (alpha[ii] >= 40) continue;
+          if (d[ii * 4 + 3] >= 40) continue;
           var y0 = Math.max(0, yy - R), y1 = Math.min(H - 1, yy + R), x0 = Math.max(0, xx - R), x1 = Math.min(W - 1, xx + R);
           for (var ny = y0; ny <= y1; ny++) for (var nx = x0; nx <= x1; nx++) near[ny * W + nx] = 1;
         }
