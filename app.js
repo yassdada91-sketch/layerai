@@ -358,9 +358,32 @@
     circle: renderCircle, frame: renderFrame, shadow: renderShadow
   };
 
+  // Text group layout. The title may take 1, 2 or 3 lines (the browser decides), so its REAL height is measured here
+  // and the accent bar and subtitle are placed right under it; the whole group is centered vertically around y = 360.
+  function elementById(spec, id) {
+    for (var i = 0; i < spec.elements.length; i++) if (spec.elements[i].id === id) return spec.elements[i];
+    return null;
+  }
+  function textHeight(e) {
+    var pad = Math.round((e.font_size || 48) * 0.15);
+    return renderText(e).canvas.height - pad * 2;
+  }
+  function flowTextGroup(spec) {
+    var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), bar = elementById(spec, "bar"), t2 = elementById(spec, "t2");
+    if (!t1 || !bar) return;
+    var gap = 28, h1 = textHeight(t1), h2 = t2 ? textHeight(t2) : 0, barH = bar.h || 12;
+    var total = h1 + gap + barH + (t2 ? gap + h2 : 0);
+    var y = Math.max(40, Math.round(360 - total / 2));
+    t1.y = y;
+    if (t1s) t1s.y = y + 5;
+    bar.y = y + h1 + gap;
+    if (t2) t2.y = bar.y + barH + gap;
+  }
+
   // --------------------------------------------------------------------- PSD
   function specToPsd(spec) {
     currentSpec = spec;
+    flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
       var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
