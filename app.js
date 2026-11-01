@@ -7,6 +7,7 @@
   var DAILY_LIMIT = 100000; // limit effectively OFF while developing; put back to 3 before going public
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
   var currentSpec = null;
+  var currentLook = ""; // value of the "style" select (photo, painting, cartoon...), sent to the Worker
 
   // ----------------------------------------------------------------- planner
   function demoSpec(prompt) {
@@ -32,12 +33,14 @@
     return LIMIT_FALLBACK_MSG;
   }
 
-  async function plan(prompt, imageFile) {
+  async function plan(prompt, imageFile, format, look) {
     if (!PLANNER_URL) return demoSpec(prompt);
     try {
       var fd = new FormData();
       if (prompt) fd.append("prompt", prompt);
       if (imageFile) fd.append("image", imageFile);
+      if (format) fd.append("format", format);
+      if (look) fd.append("look", look);
       var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
       if (res.status === 429) return { limited: true, message: await limitMessage(res) };
       if (!res.ok) throw new Error("planner " + res.status);
@@ -70,6 +73,7 @@
         var fd = new FormData(); fd.append("description", description);
         if (cutout) fd.append("cutout", cutout === "magenta" ? "magenta" : "green");
         if (style) fd.append("style", style);
+        if (currentLook) fd.append("look", currentLook);
         res = await fetch(url, { method: "POST", body: fd });
         if (res.status >= 500 && attempt < 1) { await sleep(1500); continue; }
         return res;
@@ -444,35 +448,31 @@
   }
 
   // ---------------------------------------------------------------------- UI
+  // Elements of index.html: prompt, format, style, image, go, msg, dl.
   var $ = function (id) { return document.getElementById(id); };
-  var fileInput = $("file"), drop = $("drop"), dropText = $("dropText"), blobUrl = null;
+  var promptEl = $("prompt"), formatEl = $("format"), styleEl = $("style"), fileInput = $("image");
+  var goBtn = $("go"), msgEl = $("msg"), dlEl = $("dl"), blobUrl = null;
 
-  drop.addEventListener("click", function () { fileInput.click(); });
-  fileInput.addEventListener("change", function () {
-    var f = fileInput.files[0]; if (!f) return;
-    var img = document.createElement("img"); img.src = URL.createObjectURL(f);
-    dropText.replaceChildren(img, document.createTextNode(f.name)); $("clear").hidden = false;
-  });
-  $("clear").addEventListener("click", function () {
-    fileInput.value = ""; dropText.textContent = "اضغط لاختيار صورة"; $("clear").hidden = true;
-  });
-
-  function show(content, isErr) {
-    var el = $("msg"); el.className = "msg" + (isErr ? " err" : ""); el.replaceChildren();
-    if (typeof content === "string") el.textContent = content; else el.appendChild(content);
+  function status(text, type) {
+    msgEl.textContent = text;
+    msgEl.className = type || "";
   }
 
-  $("go").addEventListener("click", async function () {
-    var prompt = $("prompt").value.trim(), file = fileInput.files[0];
-    if (!prompt && !file) { show("اكتب برومت أو اختر صورة (أو الاثنين).", true); return; }
-    if (usage().n >= DAILY_LIMIT) { show("وصلت الحد اليومي المجاني (" + DAILY_LIMIT + "). عاود غداً.", true); return; }
-    $("go").disabled = true; show("جاري التوليد...");
+  goBtn.addEventListener("click", async function () {
+    if (goBtn.disabled) return;
+    var prompt = promptEl.value.trim();
+    var file = fileInput && fileInput.files && fileInput.files[0];
+    var format = formatEl.value || "thumbnail";
+    currentLook = styleEl.value || "";
+    if (!prompt && !file) { status("اكتب برومت أو اختر صورة (أو الاثنين).", "err"); return; }
+    if (usage().n >= DAILY_LIMIT) { status("وصلت الحد اليومي المجاني (" + DAILY_LIMIT + "). عاود غداً.", "err"); return; }
+    goBtn.disabled = true; dlEl.replaceChildren(); status("جاري التوليد...");
     try {
-      var spec = await plan(prompt, file);
-      if (spec.limited) { show(spec.message, true); return; }
-      show("جاري توليد الصورة...");
+      var spec = await plan(prompt, file, format, currentLook);
+      if (spec.limited) { status(spec.message, "err"); return; }
+      status("جاري توليد الصورة...");
       var imgs = await addImages(spec, function (i, total) {
-        show("جاري توليد الصورة " + i + "/" + total + "...");
+        status("جاري توليد الصورة " + i + "/" + total + "...");
       });
       if (document.fonts && document.fonts.ready) await document.fonts.ready;
       var bytes = specToPsd(spec);
@@ -480,28 +480,29 @@
       blobUrl = URL.createObjectURL(new Blob([bytes], { type: "image/vnd.adobe.photoshop" }));
       bumpUsage();
       var a = document.createElement("a");
-      a.id = "download"; a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
+      a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
       a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
+      dlEl.replaceChildren(a);
 
-      var notes = [];
+      var notes = [], warn = false;
       if (spec.fallback) {
+        warn = true;
         notes.push("الذكاء الاصطناعي غير متاح دابا، فاستعملنا تصميماً تجريبياً." + (spec.reason ? " (" + spec.reason + ")" : ""));
       } else if (imgs.limitMsg) {
+        warn = true;
         notes.push(imgs.limitMsg + " (وضعنا مربعاً مؤقتاً مكان الصورة.)");
       } else if (imgs.failed) {
+        warn = true;
         notes.push("تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها." + (imgs.reason ? " (" + imgs.reason + ")" : ""));
       }
       var cutFailed = spec.elements.some(function (e) { return e.cutout && e._img && !e._cut; });
-      if (cutFailed) notes.push("تعذر قص خلفية الصورة، فتركناها بخلفيتها.");
+      if (cutFailed) { warn = true; notes.push("تعذر قص خلفية الصورة، فتركناها بخلفيتها."); }
+      if (format !== "thumbnail") notes.push("هاد المقاس ما تفعّلش بعد، فتولد بمقاس 1280×720.");
+      if (file) notes.push("الصورة المرجعية ما كتتحللش بعد.");
 
-      if (notes.length) {
-        var box = document.createElement("div");
-        box.appendChild(a);
-        notes.forEach(function (t) { var p = document.createElement("p"); p.textContent = t; box.appendChild(p); });
-        show(box);
-      } else show(a);
+      status((warn ? "" : "نجح إنشاء التصميم. ") + notes.join(" "), warn ? "err" : "ok");
     } catch (err) {
-      show("وقع خطأ: " + err.message, true);
-    } finally { $("go").disabled = false; }
+      status("وقع خطأ: " + err.message, "err");
+    } finally { goBtn.disabled = false; }
   });
 })();
