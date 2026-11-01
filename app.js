@@ -7,7 +7,17 @@
   var DAILY_LIMIT = 100000; // limit effectively OFF while developing; put back to 3 before going public
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
   var currentSpec = null;
-  var currentLook = ""; // value of the "style" select (photo, painting, cartoon...), sent to the Worker
+  var currentLook = ""; // value of the "style" select (photo, painting, cartoon...)
+
+  // Text added to the picture prompt for each style (the Worker reads it from the "styleHint" field).
+  var STYLE_HINTS = {
+    photo: "photorealistic, high detail",
+    painting: "oil painting style, artistic brush strokes",
+    cartoon: "cartoon illustration style, bold outlines, flat colors",
+    cinematic: "cinematic film still, dramatic lighting",
+    digital: "digital art, vibrant colors, fantasy art",
+    educational: "educational illustration, clean vector, infographic style"
+  };
 
   // ----------------------------------------------------------------- planner
   function demoSpec(prompt) {
@@ -33,6 +43,7 @@
     return LIMIT_FALLBACK_MSG;
   }
 
+  // The Worker reads: prompt, format (thumbnail, square, portrait, story, banner), style (photo, painting...).
   async function plan(prompt, imageFile, format, look) {
     if (!PLANNER_URL) return demoSpec(prompt);
     try {
@@ -40,7 +51,7 @@
       if (prompt) fd.append("prompt", prompt);
       if (imageFile) fd.append("image", imageFile);
       if (format) fd.append("format", format);
-      if (look) fd.append("look", look);
+      if (look) fd.append("style", look);
       var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
       if (res.status === 429) return { limited: true, message: await limitMessage(res) };
       if (!res.ok) throw new Error("planner " + res.status);
@@ -73,7 +84,7 @@
         var fd = new FormData(); fd.append("description", description);
         if (cutout) fd.append("cutout", cutout === "magenta" ? "magenta" : "green");
         if (style) fd.append("style", style);
-        if (currentLook) fd.append("look", currentLook);
+        if (currentLook && STYLE_HINTS[currentLook]) fd.append("styleHint", STYLE_HINTS[currentLook]);
         res = await fetch(url, { method: "POST", body: fd });
         if (res.status >= 500 && attempt < 1) { await sleep(1500); continue; }
         return res;
@@ -400,12 +411,46 @@
     circle: renderCircle, frame: renderFrame, shadow: renderShadow
   };
 
-  // Text group layout. The title may take 1, 2 or 3 lines (the browser decides), so its REAL height is measured here
-  // and the accent bar and subtitle are placed right under it; the whole group is centered vertically around y = 360.
   function elementById(spec, id) {
     for (var i = 0; i < spec.elements.length; i++) if (spec.elements[i].id === id) return spec.elements[i];
     return null;
   }
+
+  function hexLum(h) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(h || ""));
+    if (!m) return 0.5;
+    var n = parseInt(m[1], 16);
+    return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  }
+
+  // Full-background designs ("bgimg" + "overlay" layers): measure the real brightness of the picture
+  // behind the text, darken it with the overlay accordingly, and use white text (black shadow),
+  // so that the title stays readable whatever the picture is.
+  function adaptBackgroundText(spec) {
+    var bgimg = elementById(spec, "bgimg"), ov = elementById(spec, "overlay");
+    if (!bgimg || !bgimg._img || !ov) return;
+    var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), t2 = elementById(spec, "t2"), bar = elementById(spec, "bar");
+    var W = spec.width, H = spec.height, s = 8;
+    var c = makeCanvas(W / s, H / s), g = c.getContext("2d");
+    drawCover(g, bgimg._img, c.width, c.height);
+    var top = t1 ? t1.y : 0;
+    var bottom = t2 ? t2.y + t2.h : (bar ? bar.y + bar.h : H);
+    var left = t1 ? t1.x : 0, right = t1 ? t1.x + t1.w : W;
+    var x0 = Math.max(0, Math.floor(left / s)), x1 = Math.min(c.width, Math.ceil(right / s));
+    var y0 = Math.max(0, Math.floor(top / s)), y1 = Math.min(c.height, Math.ceil(bottom / s));
+    if (x1 <= x0 || y1 <= y0) return;
+    var d = g.getImageData(x0, y0, x1 - x0, y1 - y0).data, sum = 0, cnt = d.length / 4;
+    for (var i = 0; i < d.length; i += 4) sum += (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    var L = sum / cnt;
+    ov.opacity = Math.max(0.28, Math.min(0.6, 0.2 + 0.55 * L));
+    [t1, t2].forEach(function (t) { if (t) t.text_color = "#ffffff"; });
+    if (t1s) t1s.text_color = "#000000";
+    if (bar && hexLum(bar.color) < 0.35) bar.color = "#ffffff";
+  }
+
+  // Text group layout (works for every canvas size). The title may take 1, 2 or 3 lines (the browser decides),
+  // so its REAL height is measured here. The group (title, accent bar, subtitle) keeps the gap and the centre
+  // that the Worker chose, and is re-spaced with the measured heights.
   function textHeight(e) {
     var pad = Math.round((e.font_size || 48) * 0.15);
     return renderText(e).canvas.height - pad * 2;
@@ -413,9 +458,15 @@
   function flowTextGroup(spec) {
     var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), bar = elementById(spec, "bar"), t2 = elementById(spec, "t2");
     if (!t1 || !bar) return;
-    var gap = 28, h1 = textHeight(t1), h2 = t2 ? textHeight(t2) : 0, barH = bar.h || 12;
+    var barH = bar.h || 12;
+    var gap = Math.max(10, Math.round(bar.y - (t1.y + t1.h)));
+    var h1 = textHeight(t1), h2 = t2 ? textHeight(t2) : 0;
+    var oldTop = t1.y, oldBottom = t2 ? t2.y + t2.h : bar.y + barH;
+    var center = (oldTop + oldBottom) / 2;
     var total = h1 + gap + barH + (t2 ? gap + h2 : 0);
-    var y = Math.max(40, Math.round(360 - total / 2));
+    var y = Math.round(center - total / 2);
+    y = Math.min(y, spec.height - 30 - total);
+    y = Math.max(30, y);
     t1.y = y;
     if (t1s) t1s.y = y + 5;
     bar.y = y + h1 + gap;
@@ -425,6 +476,7 @@
   // --------------------------------------------------------------------- PSD
   function specToPsd(spec) {
     currentSpec = spec;
+    adaptBackgroundText(spec);
     flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
@@ -481,7 +533,7 @@
       bumpUsage();
       var a = document.createElement("a");
       a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
-      a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات)";
+      a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات، " + spec.width + "×" + spec.height + ")";
       dlEl.replaceChildren(a);
 
       var notes = [], warn = false;
@@ -497,7 +549,6 @@
       }
       var cutFailed = spec.elements.some(function (e) { return e.cutout && e._img && !e._cut; });
       if (cutFailed) { warn = true; notes.push("تعذر قص خلفية الصورة، فتركناها بخلفيتها."); }
-      if (format !== "thumbnail") notes.push("هاد المقاس ما تفعّلش بعد، فتولد بمقاس 1280×720.");
       if (file) notes.push("الصورة المرجعية ما كتتحللش بعد.");
 
       status((warn ? "" : "نجح إنشاء التصميم. ") + notes.join(" "), warn ? "err" : "ok");
