@@ -250,6 +250,18 @@
           }
         }
       }
+
+      if (keyGreen) {
+        // Step 3: gentle green-spill removal over the WHOLE object. A white or light object shot on a green screen
+        // picks up a green tint inside (not only on its edge). Light pixels (red/blue above 110) with a SMALL green
+        // excess (up to 45) lose most of it. Strongly green pixels (real green parts of the object) are left alone.
+        for (var m = 0; m < n; m++) {
+          var o3 = m * 4;
+          if (d[o3 + 3] === 0) continue;
+          var mx3 = Math.max(d[o3], d[o3 + 2]), ex3 = d[o3 + 1] - mx3;
+          if (ex3 > 0 && ex3 <= 45 && mx3 > 110) d[o3 + 1] = Math.round(mx3 + ex3 * 0.15);
+        }
+      }
     }
     g.putImageData(id, 0, 0);
     return true;
