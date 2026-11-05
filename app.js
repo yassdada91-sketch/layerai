@@ -242,6 +242,9 @@
             }
           } else {
             var lo = Math.min(r, bl);
+            // Magenta-hued pixels anywhere (the shadow the generator leaves on the screen, dark purple/red patches): drop them.
+            // Real objects almost never have red AND blue both well above green; pink cups (green high) and leaves are safe.
+            if (lo > 25 && lo > gg * 1.6 + 15) { d[o + 3] = 0; continue; }
             if (lo > gg && (near[j] || d[o + 3] < 255)) {
               var ex = lo - gg;
               if (near[j] && ex > 90 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
