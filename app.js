@@ -237,7 +237,7 @@
           if (keyGreen) {
             // Dark olive / dark green leftovers of the shadow the generator casts on the green screen (e.g. under a shoe):
             // clearly saturated yellow-green or green pixels are dropped ANYWHERE. White/grey/black objects are never that saturated.
-            if (gg >= r && gg > bl && gg > 25 && (gg - bl) > gg * 0.45) { d[o + 3] = 0; continue; }
+            if (gg >= r && gg > bl && gg > 25 && (gg - bl) > gg * 0.72) { d[o + 3] = 0; continue; }
             var mx = Math.max(r, bl);
             if (gg > mx) {
               if (near[j] && gg > mx + 40 && gg > 110) d[o + 3] = 0;     // clearly (and brightly) green near the edge: drop it; dark pixels are kept
@@ -316,7 +316,14 @@
             if (!lab[ni] && d[ni * 4 + 3] >= 40) { lab[ni] = 1; stk[top++] = ni; }
           }
         }
-        if (cc < minSize) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
+        var dropIt = cc < minSize;
+        if (!dropIt && cc < opaque * 0.08) {
+          // a medium-small piece that is almost black = leftover shadow streak, not part of the object
+          var br2 = 0;
+          for (var q3 = 0; q3 < cc; q3++) { var o7 = comp[q3] * 4; br2 += Math.max(d[o7], d[o7 + 1], d[o7 + 2]); }
+          if (br2 / cc < 70) dropIt = true;
+        }
+        if (dropIt) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
       }
       }
     }
