@@ -262,6 +262,21 @@
           if (ex3 > 0 && ex3 <= 45 && mx3 > 110) d[o3 + 1] = Math.round(mx3 + ex3 * 0.15);
         }
       }
+
+      if (keyMagenta) {
+        // Step 3 (magenta): gentle pink-spill removal over the WHOLE object. A white or light object shot on a magenta
+        // screen picks up a pink tint. Light pixels (green above 110) with a SMALL red/blue excess (up to 60) lose most of it.
+        // Strongly coloured pixels (real pink or purple parts) and green leaves are left alone.
+        for (var m2 = 0; m2 < n; m2++) {
+          var o4 = m2 * 4;
+          if (d[o4 + 3] === 0) continue;
+          var gg4 = d[o4 + 1], lo4 = Math.min(d[o4], d[o4 + 2]), ex4 = lo4 - gg4;
+          if (ex4 > 0 && ex4 <= 60 && gg4 > 110) {
+            d[o4] = Math.round(Math.max(gg4, d[o4] - ex4 * 0.85));
+            d[o4 + 2] = Math.round(Math.max(gg4, d[o4 + 2] - ex4 * 0.85));
+          }
+        }
+      }
     }
     g.putImageData(id, 0, 0);
     return true;
