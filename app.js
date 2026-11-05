@@ -244,7 +244,7 @@
             var lo = Math.min(r, bl);
             if (lo > gg && (near[j] || d[o + 3] < 255)) {
               var ex = lo - gg;
-              if (near[j] && ex > 50) d[o + 3] = 0;                      // clearly magenta and near the edge: drop it
+              if (near[j] && ex > 90 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
               else { d[o] = Math.round(r - ex * 0.6); d[o + 2] = Math.round(bl - ex * 0.6); } // fringe: remove the magenta tint
             }
           }
@@ -271,10 +271,34 @@
           var o4 = m2 * 4;
           if (d[o4 + 3] === 0) continue;
           var gg4 = d[o4 + 1], lo4 = Math.min(d[o4], d[o4 + 2]), ex4 = lo4 - gg4;
-          if (ex4 > 0 && ex4 <= 60 && gg4 > 110) {
-            d[o4] = Math.round(Math.max(gg4, d[o4] - ex4 * 0.85));
-            d[o4 + 2] = Math.round(Math.max(gg4, d[o4 + 2] - ex4 * 0.85));
+          if (ex4 > 0 && ex4 <= 110 && gg4 > 120) {
+            d[o4] = Math.round(Math.max(gg4, d[o4] - ex4 * 0.9));
+            d[o4 + 2] = Math.round(Math.max(gg4, d[o4 + 2] - ex4 * 0.9));
           }
+        }
+        // Step 4 (magenta): leftover pure-magenta pixels inside the object (gaps between leaves) become transparent.
+        for (var m3 = 0; m3 < n; m3++) {
+          var o5 = m3 * 4;
+          if (d[o5 + 3] !== 0 && dist(o5) < T1) d[o5 + 3] = 0;
+        }
+        // Step 5 (magenta): remove tiny isolated fragments (specks floating away from the subject).
+        var lab = new Uint8Array(n), stk = new Int32Array(n), comp = new Int32Array(n);
+        var minSize = Math.max(400, Math.round(opaque * 0.004));
+        for (var s1 = 0; s1 < n; s1++) {
+          if (lab[s1] || d[s1 * 4 + 3] < 40) continue;
+          var top = 0, cc = 0; stk[top++] = s1; lab[s1] = 1;
+          while (top > 0) {
+            var c0 = stk[--top]; comp[cc++] = c0;
+            var cx0 = c0 % W, cy0 = (c0 - cx0) / W;
+            for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              var nx2 = cx0 + dx, ny2 = cy0 + dy;
+              if (nx2 < 0 || ny2 < 0 || nx2 >= W || ny2 >= H) continue;
+              var ni = ny2 * W + nx2;
+              if (!lab[ni] && d[ni * 4 + 3] >= 40) { lab[ni] = 1; stk[top++] = ni; }
+            }
+          }
+          if (cc < minSize) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
         }
       }
     }
