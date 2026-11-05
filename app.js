@@ -237,7 +237,7 @@
           if (keyGreen) {
             var mx = Math.max(r, bl);
             if (gg > mx) {
-              if (near[j] && gg > mx + 40) d[o + 3] = 0;                 // clearly green and near the edge: drop it
+              if (near[j] && gg > mx + 40 && gg > 110) d[o + 3] = 0;     // clearly (and brightly) green near the edge: drop it; dark pixels are kept
               else if (near[j] || d[o + 3] < 255) d[o + 1] = mx;         // fringe: remove the green tint
             }
           } else {
@@ -266,6 +266,15 @@
         }
       }
 
+      if (keyGreen) {
+        // Step 3b (green): pixels that are semi-transparent but NOT at the outer edge (e.g. a white sole that looks
+        // a bit like the screen) become fully opaque, so the object no longer fades inside.
+        for (var m4 = 0; m4 < n; m4++) {
+          var o6 = m4 * 4, a6 = d[o6 + 3];
+          if (a6 > 0 && a6 < 255 && !near[m4]) d[o6 + 3] = 255;
+        }
+      }
+
       if (keyMagenta) {
         // Step 3 (magenta): gentle pink-spill removal over the WHOLE object. A white or light object shot on a magenta
         // screen picks up a pink tint. Light pixels (green above 110) with a SMALL red/blue excess (up to 60) lose most of it.
@@ -284,25 +293,28 @@
           var o5 = m3 * 4;
           if (d[o5 + 3] !== 0 && dist(o5) < T1) d[o5 + 3] = 0;
         }
-        // Step 5 (magenta): remove tiny isolated fragments (specks floating away from the subject).
-        var lab = new Uint8Array(n), stk = new Int32Array(n), comp = new Int32Array(n);
-        var minSize = Math.max(400, Math.round(opaque * 0.004));
-        for (var s1 = 0; s1 < n; s1++) {
-          if (lab[s1] || d[s1 * 4 + 3] < 40) continue;
-          var top = 0, cc = 0; stk[top++] = s1; lab[s1] = 1;
-          while (top > 0) {
-            var c0 = stk[--top]; comp[cc++] = c0;
-            var cx0 = c0 % W, cy0 = (c0 - cx0) / W;
-            for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
-              if (!dx && !dy) continue;
-              var nx2 = cx0 + dx, ny2 = cy0 + dy;
-              if (nx2 < 0 || ny2 < 0 || nx2 >= W || ny2 >= H) continue;
-              var ni = ny2 * W + nx2;
-              if (!lab[ni] && d[ni * 4 + 3] >= 40) { lab[ni] = 1; stk[top++] = ni; }
-            }
+      }
+
+      if (keyGreen || keyMagenta) {
+      // Step 5 (green + magenta): remove tiny isolated fragments (black specks / pieces floating away from the subject).
+      var lab = new Uint8Array(n), stk = new Int32Array(n), comp = new Int32Array(n);
+      var minSize = Math.max(400, Math.round(opaque * 0.004));
+      for (var s1 = 0; s1 < n; s1++) {
+        if (lab[s1] || d[s1 * 4 + 3] < 40) continue;
+        var top = 0, cc = 0; stk[top++] = s1; lab[s1] = 1;
+        while (top > 0) {
+          var c0 = stk[--top]; comp[cc++] = c0;
+          var cx0 = c0 % W, cy0 = (c0 - cx0) / W;
+          for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            var nx2 = cx0 + dx, ny2 = cy0 + dy;
+            if (nx2 < 0 || ny2 < 0 || nx2 >= W || ny2 >= H) continue;
+            var ni = ny2 * W + nx2;
+            if (!lab[ni] && d[ni * 4 + 3] >= 40) { lab[ni] = 1; stk[top++] = ni; }
           }
-          if (cc < minSize) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
         }
+        if (cc < minSize) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
+      }
       }
     }
     g.putImageData(id, 0, 0);
