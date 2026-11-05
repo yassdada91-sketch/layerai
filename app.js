@@ -235,6 +235,9 @@
           if (d[j * 4 + 3] === 0) continue;
           var o = j * 4, r = d[o], gg = d[o + 1], bl = d[o + 2];
           if (keyGreen) {
+            // Dark olive / dark green leftovers of the shadow the generator casts on the green screen (e.g. under a shoe):
+            // clearly saturated yellow-green or green pixels are dropped ANYWHERE. White/grey/black objects are never that saturated.
+            if (gg >= r && gg > bl && gg > 25 && (gg - bl) > gg * 0.45) { d[o + 3] = 0; continue; }
             var mx = Math.max(r, bl);
             if (gg > mx) {
               if (near[j] && gg > mx + 40 && gg > 110) d[o + 3] = 0;     // clearly (and brightly) green near the edge: drop it; dark pixels are kept
