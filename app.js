@@ -501,9 +501,19 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
+  // Soft elliptical shadow on the ground (under the feet of a subject).
+  function renderGroundShadow(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = c.width / 2;
+    g.translate(c.width / 2, c.height / 2); g.scale(1, c.height / c.width);
+    var gr = g.createRadialGradient(0, 0, 0, 0, 0, r);
+    gr.addColorStop(0, "rgba(0,0,0,0.75)"); gr.addColorStop(0.55, "rgba(0,0,0,0.35)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = gr; g.fillRect(-r, -r, r * 2, r * 2);
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
   var RENDER = {
     background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
-    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays
+    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow
   };
 
   function elementById(spec, id) {
