@@ -487,14 +487,15 @@
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
     var ox = c.width * 0.8, oy = -c.height * 0.1, L = c.height * 1.8;
     var glow = g.createRadialGradient(ox, oy, 0, ox, oy, c.height * 0.9);
-    glow.addColorStop(0, "rgba(255,241,184,0.7)"); glow.addColorStop(1, "rgba(255,241,184,0)");
+    glow.addColorStop(0, "rgba(255,226,140,0.30)"); glow.addColorStop(1, "rgba(255,226,140,0)");
     g.fillStyle = glow; g.fillRect(0, 0, c.width, c.height);
+    try { g.filter = "blur(" + Math.max(6, Math.round(c.width * 0.012)) + "px)"; } catch (_) {}
     for (var i = 0; i < 7; i++) {
       var a = 0.12 + i * 0.14, hw = 0.03 + (i % 3) * 0.015;
       var x1 = ox - Math.sin(a - hw) * L, y1 = oy + Math.cos(a - hw) * L;
       var x2 = ox - Math.sin(a + hw) * L, y2 = oy + Math.cos(a + hw) * L;
       var gr = g.createLinearGradient(ox, oy, ox - Math.sin(a) * L, oy + Math.cos(a) * L);
-      gr.addColorStop(0, "rgba(255,241,184,0.55)"); gr.addColorStop(1, "rgba(255,241,184,0)");
+      gr.addColorStop(0, "rgba(255,226,140,0.30)"); gr.addColorStop(1, "rgba(255,226,140,0)");
       g.fillStyle = gr; g.beginPath(); g.moveTo(ox, oy); g.lineTo(x1, y1); g.lineTo(x2, y2); g.closePath(); g.fill();
     }
     return { canvas: c, x: e.x, y: e.y };
