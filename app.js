@@ -126,6 +126,12 @@
         if (!out.reason) out.reason = (err && err.message) || "unknown";
       }
     }
+    // Copies of an element (e.src) reuse the picture of the element they come from.
+    spec.elements.forEach(function (e) {
+      if (!e.src) return;
+      var from = elementById(spec, e.src);
+      if (from && from._img) e._img = from._img;
+    });
     return out;
   }
 
@@ -250,8 +256,8 @@
             if (lo > 25 && lo > gg * 1.6 + 15) { d[o + 3] = 0; continue; }
             if (lo > gg && (near[j] || d[o + 3] < 255)) {
               var ex = lo - gg;
-              if (near[j] && ex > 90 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
-              else { d[o] = Math.round(r - ex * 0.6); d[o + 2] = Math.round(bl - ex * 0.6); } // fringe: remove the magenta tint
+              if (near[j] && ex > 60 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
+              else { d[o] = Math.round(r - ex * 0.95); d[o + 2] = Math.round(bl - ex * 0.95); } // fringe: remove the magenta tint
             }
           }
         }
@@ -462,12 +468,19 @@
     return c;
   }
 
+  function flipCanvas(src) {
+    var c = makeCanvas(src.width, src.height), g = c.getContext("2d");
+    g.translate(c.width, 0); g.scale(-1, 1); g.drawImage(src, 0, 0);
+    return c;
+  }
+
   function renderImage(e) {
     if (e._layer) return e._layer;
     if (!e._img) return renderImagePlaceholder(e);
     var c = null;
     if (e.cutout) {
       c = cutOut(e);
+      if (c && e.flip) c = flipCanvas(c);
       if (c) e._cut = c;
     }
     if (!c) {
