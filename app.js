@@ -471,7 +471,7 @@
   // Colour harmony: cut-out elements (subject, props) are generated with their own lighting. A gentle tint toward the average
   // colour of the scene picture, a little less saturation and a slight brightness match make them sit in the scene.
   // HARMONIZE = strength (0 = off). Only used when the design has a scene picture ("bgimg").
-  var HARMONIZE = 0.25;
+  var HARMONIZE = 0.4;
 
   function sceneTone(spec) {
     var bg = elementById(spec, "bgimg");
