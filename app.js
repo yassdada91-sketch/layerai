@@ -629,6 +629,17 @@
     currentSpec = spec;
     adaptBackgroundText(spec);
     spec._tone = sceneTone(spec);
+    // A cut-out element whose background could not be removed would show as a coloured box: drop it (and its shadows).
+    var dropIds = {};
+    spec.elements.forEach(function (e) {
+      if (e.kind === "image" && e.cutout && e._img) { renderImage(e); if (!e._cut) dropIds[e.id] = true; }
+    });
+    spec._dropped = Object.keys(dropIds).length;
+    if (spec._dropped) {
+      spec.elements = spec.elements.filter(function (e) {
+        return !dropIds[e.id] && !dropIds[String(e.id).replace(/^(gs_|sh_)/, "")];
+      });
+    }
     flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
@@ -699,8 +710,7 @@
         warn = true;
         notes.push("تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها." + (imgs.reason ? " (" + imgs.reason + ")" : ""));
       }
-      var cutFailed = spec.elements.some(function (e) { return e.cutout && e._img && !e._cut; });
-      if (cutFailed) { warn = true; notes.push("تعذر قص خلفية الصورة، فتركناها بخلفيتها."); }
+      if (spec._dropped) notes.push("حذفنا " + spec._dropped + " عنصراً تعذر قص خلفيته.");
       if (file) notes.push("الصورة المرجعية ما كتتحللش بعد.");
 
       status((warn ? "" : "نجح إنشاء التصميم. ") + notes.join(" "), warn ? "err" : "ok");
