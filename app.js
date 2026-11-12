@@ -468,6 +468,38 @@
     return c;
   }
 
+  // Colour harmony: cut-out elements (subject, props) are generated with their own lighting. A gentle tint toward the average
+  // colour of the scene picture, a little less saturation and a slight brightness match make them sit in the scene.
+  // HARMONIZE = strength (0 = off). Only used when the design has a scene picture ("bgimg").
+  var HARMONIZE = 0.25;
+
+  function sceneTone(spec) {
+    var bg = elementById(spec, "bgimg");
+    if (!HARMONIZE || !bg || !bg._img) return null;
+    var c = makeCanvas(16, 16), g = c.getContext("2d");
+    drawCover(g, bg._img, 16, 16);
+    var d = g.getImageData(0, 0, 16, 16).data, r = 0, gg = 0, b = 0, n = d.length / 4;
+    for (var i = 0; i < d.length; i += 4) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; }
+    r /= n; gg /= n; b /= n;
+    var lum = 0.299 * r + 0.587 * gg + 0.114 * b;
+    return lum < 20 ? null : { r: r, g: gg, b: b, lum: lum };
+  }
+
+  function harmonizeCanvas(c, tone) {
+    var s = HARMONIZE, g = c.getContext("2d"), id = g.getImageData(0, 0, c.width, c.height), d = id.data;
+    var mr = 1 - s + s * (tone.r / tone.lum), mg = 1 - s + s * (tone.g / tone.lum), mb = 1 - s + s * (tone.b / tone.lum);
+    var bright = 1 + (tone.lum / 128 - 1) * s * 0.5, ds = s * 0.6;
+    for (var i = 0; i < d.length; i += 4) {
+      if (d[i + 3] === 0) continue;
+      var r = d[i], gg = d[i + 1], b = d[i + 2], l = 0.299 * r + 0.587 * gg + 0.114 * b;
+      r += (l - r) * ds; gg += (l - gg) * ds; b += (l - b) * ds;
+      d[i] = Math.max(0, Math.min(255, Math.round(r * mr * bright)));
+      d[i + 1] = Math.max(0, Math.min(255, Math.round(gg * mg * bright)));
+      d[i + 2] = Math.max(0, Math.min(255, Math.round(b * mb * bright)));
+    }
+    g.putImageData(id, 0, 0);
+  }
+
   function flipCanvas(src) {
     var c = makeCanvas(src.width, src.height), g = c.getContext("2d");
     g.translate(c.width, 0); g.scale(-1, 1); g.drawImage(src, 0, 0);
@@ -481,6 +513,7 @@
     if (e.cutout) {
       c = cutOut(e);
       if (c && e.flip) c = flipCanvas(c);
+      if (c && currentSpec && currentSpec._tone) harmonizeCanvas(c, currentSpec._tone);
       if (c) e._cut = c;
     }
     if (!c) {
@@ -595,6 +628,7 @@
   function specToPsd(spec) {
     currentSpec = spec;
     adaptBackgroundText(spec);
+    spec._tone = sceneTone(spec);
     flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
