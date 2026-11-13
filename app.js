@@ -557,9 +557,18 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
+  // Soft dark gradient at the top (behind the title of scene designs).
+  function renderTopShade(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
+    var gr = g.createLinearGradient(0, 0, 0, c.height);
+    gr.addColorStop(0, "rgba(0,0,0,0.85)"); gr.addColorStop(0.6, "rgba(0,0,0,0.35)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = gr; g.fillRect(0, 0, c.width, c.height);
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
   var RENDER = {
     background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
-    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow
+    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow, topshade: renderTopShade
   };
 
   function elementById(spec, id) {
