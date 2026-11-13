@@ -97,32 +97,38 @@
     throw new Error(((lastErr && lastErr.message) || "network") + " (2 attempts)");
   }
 
-  // A generated background sometimes comes with plain bands (white, grey...) along its edges, like a framed photo.
-  // Rows / columns that are almost one flat colour are cut off at each edge (at most 30% per side). Returns a canvas, or the picture itself.
+  // A generated background sometimes comes with smooth bands (white, grey, light blue...) along its edges, like a framed photo.
+  // From each edge, rows / columns that are smooth (low colour variation along the line) are a candidate band; it is cut only if it
+  // ends with a sharp jump of colour (at most 30% per side). Returns a canvas, or the picture itself when nothing is found.
   function trimBands(img) {
     var W = img.width, H = img.height, c = makeCanvas(W, H), g = c.getContext("2d");
     g.drawImage(img, 0, 0);
     var d = g.getImageData(0, 0, W, H).data;
-    function flat(len, at) {
+    function stats(len, at) {
       var n = 0, s = [0, 0, 0], q = [0, 0, 0], step = Math.max(1, Math.floor(len / 64));
       for (var i = 0; i < len; i += step) {
         var o = at(i);
         for (var k = 0; k < 3; k++) { var v = d[o + k]; s[k] += v; q[k] += v * v; }
         n++;
       }
-      var sd = 0;
-      for (var k2 = 0; k2 < 3; k2++) { var m = s[k2] / n; sd += Math.sqrt(Math.max(0, q[k2] / n - m * m)); }
-      return sd / 3 < 10;
+      var sd = 0, mean = [];
+      for (var k2 = 0; k2 < 3; k2++) { var m = s[k2] / n; mean.push(m); sd += Math.sqrt(Math.max(0, q[k2] / n - m * m)); }
+      return { sd: sd / 3, mean: mean };
     }
-    var rowFlat = function (y) { return flat(W, function (x) { return (y * W + x) * 4; }); };
-    var colFlat = function (x) { return flat(H, function (y) { return (y * W + x) * 4; }); };
-    var t = 0, b = 0, l = 0, r = 0, maxY = Math.floor(H * 0.3), maxX = Math.floor(W * 0.3);
-    while (t < maxY && rowFlat(t)) t++;
-    while (b < maxY && rowFlat(H - 1 - b)) b++;
-    while (l < maxX && colFlat(l)) l++;
-    while (r < maxX && colFlat(W - 1 - r)) r++;
-    if (t + b + l + r < 6) return img;
-    if (t >= maxY || b >= maxY || l >= maxX || r >= maxX) return img; // a flat picture: not a frame
+    var rows = [], cols = [];
+    for (var y = 0; y < H; y++) rows.push(stats(W, function (x) { return (y * W + x) * 4; }));
+    for (var x = 0; x < W; x++) cols.push(stats(H, function (yy) { return (yy * W + x) * 4; }));
+    function jump(a, b) { return (Math.abs(a.mean[0] - b.mean[0]) + Math.abs(a.mean[1] - b.mean[1]) + Math.abs(a.mean[2] - b.mean[2])) / 3; }
+    // arr: lines of the picture, from[i] gives the line index at distance i from the edge; returns the band thickness (0 = none)
+    function band(arr, len, at) {
+      var max = Math.floor(len * 0.3), n = 0;
+      while (n < max && arr[at(n)].sd < 22) n++;
+      if (n < 3 || n >= max) return 0;                       // nothing, or the whole outer third is smooth (sky, wall...): leave it
+      return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 30 ? n : 0;
+    }
+    var t = band(rows, H, function (i) { return i; }), b = band(rows, H, function (i) { return H - 1 - i; });
+    var l = band(cols, W, function (i) { return i; }), r = band(cols, W, function (i) { return W - 1 - i; });
+    if (t + b + l + r === 0) return img;
     var nw = W - l - r, nh = H - t - b;
     if (nw < W * 0.4 || nh < H * 0.4) return img;
     var out = makeCanvas(nw, nh);
