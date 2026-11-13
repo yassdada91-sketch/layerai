@@ -652,6 +652,7 @@
     flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
+      if (e.center) r.x = Math.round((spec.width - c.width) / 2) + (e.dx || 0);
       var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
       var op = typeof e.opacity === "number" ? Math.max(0, Math.min(1, e.opacity)) : 1;
       if (op < 1) { for (var i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * op); }
