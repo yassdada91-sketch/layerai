@@ -126,8 +126,27 @@
       if (n < 3 || n >= max) return 0;                       // nothing, or the whole outer third is smooth (sky, wall...): leave it
       return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 30 ? n : 0;
     }
+    // Fallback: a perfectly straight, crisp edge across the whole line (a flat band whose colour is not smooth enough for band()).
+    // crisp(i, ...): fraction of the line where pixels at distance i-1 and i+1 from the edge differ strongly.
+    function crisp(lineLen, nLines, px) {                    // px(line, j) -> offset of pixel j on the line at distance 'line' from the edge
+      var max = Math.floor(nLines * 0.3);
+      for (var i = 3; i < max; i++) {
+        var hit = 0, tot = 0, step = Math.max(1, Math.floor(lineLen / 80));
+        for (var j = 0; j < lineLen; j += step) {
+          var p = px(i - 1, j), q = px(i + 1, j);
+          var df = (Math.abs(d[p] - d[q]) + Math.abs(d[p + 1] - d[q + 1]) + Math.abs(d[p + 2] - d[q + 2])) / 3;
+          if (df > 40) hit++; tot++;
+        }
+        if (hit / tot >= 0.92) return i;
+      }
+      return 0;
+    }
     var t = band(rows, H, function (i) { return i; }), b = band(rows, H, function (i) { return H - 1 - i; });
     var l = band(cols, W, function (i) { return i; }), r = band(cols, W, function (i) { return W - 1 - i; });
+    if (!t) t = crisp(W, H, function (i, x) { return (i * W + x) * 4; });
+    if (!b) b = crisp(W, H, function (i, x) { return ((H - 1 - i) * W + x) * 4; });
+    if (!l) l = crisp(H, W, function (i, y) { return (y * W + i) * 4; });
+    if (!r) r = crisp(H, W, function (i, y) { return (y * W + (W - 1 - i)) * 4; });
     if (t + b + l + r === 0) return img;
     var nw = W - l - r, nh = H - t - b;
     if (nw < W * 0.4 || nh < H * 0.4) return img;
