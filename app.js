@@ -290,7 +290,7 @@
         }
         var nonBg = 0;
         for (var nb = 0; nb < n; nb++) if (d[nb * 4 + 3] >= 40) nonBg++;      // everything that is not (almost) transparent yet, also half-transparent leftovers
-        if (rc <= nonBg * 0.8) {
+        if (nonBg - rc >= n * 0.03) {   // something clearly remains after the removal (a small object on a big leftover green area is fine)
           for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
         }
       }
