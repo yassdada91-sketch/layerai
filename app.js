@@ -444,8 +444,16 @@
     return { canvas: c, x: e.x - pad, y: e.y - pad };
   }
 
+  // Text effects (e.fx): gold, chrome, neon. Drawn in ONE layer: depth (stacked copies), dark outline, glow, gradient fill, thin highlight.
+  var TEXT_FX = {
+    gold:   { stops: ["#fff6bf", "#ffd84a", "#f2a413", "#b35a05"], stroke: "#5a2800", depth: "#8a4308", glow: "rgba(255,170,30,0.55)" },
+    chrome: { stops: ["#ffffff", "#d6e6ff", "#7ea3d8", "#27508f"], stroke: "#0a1c46", depth: "#12306e", glow: "rgba(120,170,255,0.55)" },
+    neon:   { stops: ["#ffffff", "#e6ffff", "#aef6ff", "#6fe9ff"], stroke: "#00c8ff", depth: null, glow: "rgba(0,229,255,0.95)" }
+  };
+  function textPad(e) { var s = e.font_size || 48; return Math.round(s * (TEXT_FX[e.fx] ? 0.4 : 0.15)); }
+
   function renderText(e) {
-    var size = e.font_size || 48, pad = Math.round(size * 0.15);
+    var size = e.font_size || 48, fx = TEXT_FX[e.fx] || null, pad = textPad(e);
     var fontFamily = '"Segoe UI", Tahoma, "Noto Sans Arabic", "DejaVu Sans", Arial, sans-serif';
     var probe = makeCanvas(10, 10).getContext("2d");
     probe.font = "bold " + size + "px " + fontFamily;
@@ -462,7 +470,27 @@
     g.fillStyle = e.text_color || "#000000"; g.textBaseline = "top";
     var rtl = /[\u0590-\u08FF]/.test(e.text || "");
     g.direction = rtl ? "rtl" : "ltr"; g.textAlign = rtl ? "right" : "left";
-    lines.forEach(function (l, i) { g.fillText(l, rtl ? c.width - pad : pad, pad + i * lh); });
+    var tx = rtl ? c.width - pad : pad;
+    if (!fx) {
+      lines.forEach(function (l, i) { g.fillText(l, tx, pad + i * lh); });
+    } else {
+      g.lineJoin = "round"; g.miterLimit = 2;
+      var depthN = Math.max(3, Math.round(size * 0.07)), sw = Math.max(4, Math.round(size * 0.1));
+      lines.forEach(function (l, i) {
+        var y = pad + i * lh;
+        if (fx.depth) {                                        // extrusion: stacked dark copies going down-right
+          g.strokeStyle = fx.depth; g.fillStyle = fx.depth; g.lineWidth = sw;
+          for (var k = depthN; k >= 1; k--) { g.strokeText(l, tx + k * 0.6, y + k); g.fillText(l, tx + k * 0.6, y + k); }
+        }
+        g.save();
+        g.shadowColor = fx.glow; g.shadowBlur = Math.round(size * (e.fx === "neon" ? 0.35 : 0.22));
+        g.strokeStyle = fx.stroke; g.lineWidth = sw; g.strokeText(l, tx, y);  // outline (+ glow)
+        g.restore();
+        var gr = g.createLinearGradient(0, y, 0, y + size * 1.05);           // gradient fill
+        gr.addColorStop(0, fx.stops[0]); gr.addColorStop(0.35, fx.stops[1]); gr.addColorStop(0.62, fx.stops[2]); gr.addColorStop(1, fx.stops[3]);
+        g.fillStyle = gr; g.fillText(l, tx, y);
+      });
+    }
     return { canvas: c, x: e.x - pad, y: e.y - pad };
   }
 
@@ -652,8 +680,7 @@
   // so its REAL height is measured here. The group (title, accent bar, subtitle) keeps the gap and the centre
   // that the Worker chose, and is re-spaced with the measured heights.
   function textHeight(e) {
-    var pad = Math.round((e.font_size || 48) * 0.15);
-    return renderText(e).canvas.height - pad * 2;
+    return renderText(e).canvas.height - textPad(e) * 2;
   }
   function flowTextGroup(spec) {
     var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), bar = elementById(spec, "bar"), t2 = elementById(spec, "t2");
