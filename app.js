@@ -124,7 +124,7 @@
       var max = Math.floor(len * 0.3), n = 0;
       while (n < max && arr[at(n)].sd < 6 && (n === 0 || jump(arr[at(n - 1)], arr[at(n)]) < 14)) n++; // smooth AND continuous in colour
       if (n < 3 || n >= max) return 0;                       // nothing, or the whole outer third is smooth (sky, wall...): leave it
-      return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 30 ? n : 0;
+      return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 18 ? n : 0;
     }
     // Fallback: a perfectly straight, crisp edge across the whole line (a flat band whose colour is not smooth enough for band()).
     // crisp(i, ...): fraction of the line where pixels at distance i-1 and i+1 from the edge differ strongly.
