@@ -122,7 +122,7 @@
     // arr: lines of the picture, from[i] gives the line index at distance i from the edge; returns the band thickness (0 = none)
     function band(arr, len, at) {
       var max = Math.floor(len * 0.3), n = 0;
-      while (n < max && arr[at(n)].sd < 22) n++;
+      while (n < max && arr[at(n)].sd < 6 && (n === 0 || jump(arr[at(n - 1)], arr[at(n)]) < 14)) n++; // smooth AND continuous in colour
       if (n < 3 || n >= max) return 0;                       // nothing, or the whole outer third is smooth (sky, wall...): leave it
       return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 30 ? n : 0;
     }
@@ -143,10 +143,10 @@
     }
     var t = band(rows, H, function (i) { return i; }), b = band(rows, H, function (i) { return H - 1 - i; });
     var l = band(cols, W, function (i) { return i; }), r = band(cols, W, function (i) { return W - 1 - i; });
-    if (!t) t = crisp(W, H, function (i, x) { return (i * W + x) * 4; });
-    if (!b) b = crisp(W, H, function (i, x) { return ((H - 1 - i) * W + x) * 4; });
-    if (!l) l = crisp(H, W, function (i, y) { return (y * W + i) * 4; });
-    if (!r) r = crisp(H, W, function (i, y) { return (y * W + (W - 1 - i)) * 4; });
+    if (!t && rows[0].sd < 8) t = crisp(W, H, function (i, x) { return (i * W + x) * 4; });
+    if (!b && rows[H - 1].sd < 8) b = crisp(W, H, function (i, x) { return ((H - 1 - i) * W + x) * 4; });
+    if (!l && cols[0].sd < 8) l = crisp(H, W, function (i, y) { return (y * W + i) * 4; });
+    if (!r && cols[W - 1].sd < 8) r = crisp(H, W, function (i, y) { return (y * W + (W - 1 - i)) * 4; });
     if (t + b + l + r === 0) return img;
     var nw = W - l - r, nh = H - t - b;
     if (nw < W * 0.4 || nh < H * 0.4) return img;
@@ -288,7 +288,7 @@
           if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
           if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
         }
-        if (rc <= opaque * 0.4) {
+        if (rc <= opaque * 0.8) {
           for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
         }
       }
