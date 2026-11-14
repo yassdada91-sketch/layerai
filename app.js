@@ -288,7 +288,9 @@
           if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
           if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
         }
-        if (rc <= opaque * 0.8) {
+        var nonBg = 0;
+        for (var nb = 0; nb < n; nb++) if (d[nb * 4 + 3] >= 40) nonBg++;      // everything that is not (almost) transparent yet, also half-transparent leftovers
+        if (rc <= nonBg * 0.8) {
           for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
         }
       }
@@ -339,7 +341,10 @@
         // a bit like the screen) become fully opaque, so the object no longer fades inside.
         for (var m4 = 0; m4 < n; m4++) {
           var o6 = m4 * 4, a6 = d[o6 + 3];
-          if (a6 > 0 && a6 < 255 && !near[m4]) d[o6 + 3] = 255;
+          if (a6 > 0 && a6 < 255 && !near[m4]) {
+            // clearly green leftovers of the screen (a lighter patch of it) are dropped; everything else becomes solid
+            d[o6 + 3] = (d[o6 + 1] > Math.max(d[o6], d[o6 + 2]) + 40) ? 0 : 255;
+          }
         }
       }
 
