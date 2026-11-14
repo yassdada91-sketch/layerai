@@ -278,7 +278,7 @@
         for (var s0 = 0; s0 < n; s0++) if (d[s0 * 4 + 3] < 40) { seen2[s0] = 1; st2[sp2++] = s0; }
         var greenish = function (ix) {
           var o2 = ix * 4, rr = d[o2], g2 = d[o2 + 1], b2 = d[o2 + 2];
-          return g2 > 90 && g2 > Math.max(rr, b2) + 30;
+          return (g2 > 90 && g2 > Math.max(rr, b2) + 30) || (g2 > 95 && g2 > rr + 4 && g2 > b2 + 55); // green, or yellow-green / olive leftovers
         };
         var spread = function (ix) {
           if (!seen2[ix] && d[ix * 4 + 3] >= 40 && greenish(ix)) { seen2[ix] = 1; removed[rc++] = ix; st2[sp2++] = ix; }
