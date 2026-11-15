@@ -700,6 +700,15 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
+  // Polygon with points given as fractions of the box (used for diagonal shapes and stripes).
+  function renderPoly(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), pts = e.points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    g.fillStyle = e.color || "#d9b8a0"; g.beginPath();
+    pts.forEach(function (p, i) { if (i) g.lineTo(p[0] * e.w, p[1] * e.h); else g.moveTo(p[0] * e.w, p[1] * e.h); });
+    g.closePath(); g.fill();
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
   // Arch: a rectangle with a half-circle top (the big shape behind the person).
   function renderArch(e) {
     var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = e.w / 2;
@@ -737,23 +746,23 @@
       m.push({ w: w, size: size }); widest = Math.max(widest, w); total += size * (1 + gap);
     });
     var pad = 10, c = makeCanvas(Math.ceil(widest) + pad * 2, Math.ceil(total) + pad * 2), g = c.getContext("2d");
-    var rtl = /[֐-ࣿ]/.test(lines.map(function (l) { return l.text; }).join("")), right = rtl || e.align === "right";
+    var rtl = /[֐-ࣿ]/.test(lines.map(function (l) { return l.text; }).join("")), right = rtl || e.align === "right", ctr = e.align === "center";
     var y = pad;
     lines.forEach(function (l, i) {
       var size = m[i].size; g.font = (l.weight || 700) + " " + size + "px " + UI_FONT; g.fillStyle = l.color || "#222"; g.textBaseline = "top";
-      g.direction = rtl ? "rtl" : "ltr"; g.textAlign = right ? "right" : "left";
-      var tx = right ? c.width - pad : pad, sp = l.spacing || 0;
-      if (sp && !rtl && !right) { var xx = tx; String(l.text || "").split("").forEach(function (ch) { g.fillText(ch, xx, y); xx += g.measureText(ch).width + sp; }); }
+      g.direction = rtl ? "rtl" : "ltr"; g.textAlign = ctr ? "center" : (right ? "right" : "left");
+      var tx = ctr ? c.width / 2 : (right ? c.width - pad : pad), sp = l.spacing || 0;
+      if (sp && !rtl && !right && !ctr) { var xx = tx; String(l.text || "").split("").forEach(function (ch) { g.fillText(ch, xx, y); xx += g.measureText(ch).width + sp; }); }
       else g.fillText(l.text || "", tx, y);
       y += size * (1 + gap);
     });
-    return { canvas: c, x: right ? e.x + e.w - c.width + pad : e.x - pad, y: e.y - pad };
+    return { canvas: c, x: ctr ? Math.round(e.x + e.w / 2 - c.width / 2) : (right ? e.x + e.w - c.width + pad : e.x - pad), y: e.y - pad };
   }
 
   var RENDER = {
     background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
     circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow, topshade: renderTopShade,
-    card: renderCard, button: renderButton, arch: renderArch, dots: renderDots, leader: renderLeader, rich: renderRich
+    poly: renderPoly, card: renderCard, button: renderButton, arch: renderArch, dots: renderDots, leader: renderLeader, rich: renderRich
   };
 
   function elementById(spec, id) {
