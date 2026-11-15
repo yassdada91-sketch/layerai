@@ -658,9 +658,94 @@
     return { canvas: c, x: e.x, y: e.y };
   }
 
+
+  // ---- Promo components (all drawn by code, each one is its own layer) ----
+  var UI_FONT = '"Segoe UI", Tahoma, "Noto Sans Arabic", "DejaVu Sans", Arial, sans-serif';
+
+  // Rounded card with a soft drop shadow (price tags, info boxes).
+  function renderCard(e) {
+    var pad = 28, c = makeCanvas(e.w + pad * 2, e.h + pad * 2), g = c.getContext("2d");
+    g.shadowColor = "rgba(0,0,0," + (e.shadow == null ? 0.18 : e.shadow) + ")"; g.shadowBlur = 22; g.shadowOffsetY = 8;
+    g.fillStyle = e.color || "#ffffff";
+    roundRectPath(g, pad, pad, e.w, e.h, e.radius == null ? 26 : e.radius); g.fill();
+    return { canvas: c, x: e.x - pad, y: e.y - pad };
+  }
+
+  // Pill button with a label and an optional arrow.
+  function renderButton(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), size = e.font_size || 34, r = e.h / 2;
+    g.fillStyle = e.color || "#c0501e"; roundRectPath(g, 0, 0, e.w, e.h, r); g.fill();
+    g.fillStyle = e.text_color || "#ffffff"; g.font = "600 " + size + "px " + UI_FONT; g.textBaseline = "middle";
+    var rtl = /[֐-ࣿ]/.test(e.text || ""); g.direction = rtl ? "rtl" : "ltr";
+    var label = String(e.text || ""), tw = g.measureText(label).width, arrow = e.arrow !== false, aw = arrow ? size * 1.2 : 0;
+    var total = tw + aw, x0 = (e.w - total) / 2;
+    g.textAlign = "left"; if (rtl) { g.textAlign = "left"; g.direction = "ltr"; }
+    g.fillText(label, arrow && rtl ? x0 + aw : x0, e.h / 2 + 1);
+    if (arrow) {
+      var ax = rtl ? x0 + aw * 0.1 : x0 + tw + size * 0.35, ay = e.h / 2, L = size * 0.7;
+      g.strokeStyle = e.text_color || "#ffffff"; g.lineWidth = Math.max(3, size * 0.09); g.lineCap = "round"; g.lineJoin = "round";
+      g.beginPath();
+      if (rtl) { g.moveTo(ax + L, ay); g.lineTo(ax, ay); g.moveTo(ax + L * 0.35, ay - L * 0.35); g.lineTo(ax, ay); g.lineTo(ax + L * 0.35, ay + L * 0.35); }
+      else { g.moveTo(ax, ay); g.lineTo(ax + L, ay); g.moveTo(ax + L * 0.65, ay - L * 0.35); g.lineTo(ax + L, ay); g.lineTo(ax + L * 0.65, ay + L * 0.35); }
+      g.stroke();
+    }
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Arch: a rectangle with a half-circle top (the big shape behind the person).
+  function renderArch(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = e.w / 2;
+    g.fillStyle = e.color || "#d9b8a0";
+    g.beginPath(); g.moveTo(0, e.h); g.lineTo(0, r); g.arc(r, r, r, Math.PI, 0); g.lineTo(e.w, e.h); g.closePath(); g.fill();
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Grid of small dots (decoration).
+  function renderDots(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), cols = e.cols || 6, rows = e.rows || 4, rad = e.dot || 4;
+    g.fillStyle = e.color || "#8a5a44";
+    for (var i = 0; i < cols; i++) for (var j = 0; j < rows; j++) {
+      g.beginPath(); g.arc(rad + i * ((e.w - rad * 2) / Math.max(1, cols - 1)), rad + j * ((e.h - rad * 2) / Math.max(1, rows - 1)), rad, 0, Math.PI * 2); g.fill();
+    }
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Leader line: a bent line ending with a dot (connects a price card to the product). (x1,y1)->(x2,y2) are relative to the box.
+  function renderLeader(e) {
+    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), lw = e.line || 3, dr = e.dot || 9;
+    g.strokeStyle = e.color || "#a0522d"; g.fillStyle = e.color || "#a0522d"; g.lineWidth = lw; g.lineCap = "round"; g.lineJoin = "round";
+    var fl = e.flip ? -1 : 1, sx = e.flip ? e.w - lw : lw, ex = e.flip ? dr : e.w - dr, y1 = lw, y2 = e.h - dr;
+    g.beginPath(); g.moveTo(sx, y1); g.lineTo(sx + fl * (e.w - dr - lw) * 0.45, y1); g.lineTo(ex, y2); g.stroke();
+    g.beginPath(); g.arc(ex, y2, dr, 0, Math.PI * 2); g.fill();
+    return { canvas: c, x: e.x, y: e.y };
+  }
+
+  // Stacked headline lines, each with its own size / weight / colour / letter spacing: lines:[{text,size,weight,color,spacing}]
+  function renderRich(e) {
+    var lines = e.lines || [], gap = e.gap == null ? 0.12 : e.gap, probe = makeCanvas(10, 10).getContext("2d"), widest = 0, total = 0, m = [];
+    lines.forEach(function (l) {
+      var size = l.size || 60; probe.font = (l.weight || 700) + " " + size + "px " + UI_FONT;
+      var sp = l.spacing || 0, w = probe.measureText(l.text || "").width + sp * Math.max(0, String(l.text || "").length - 1);
+      m.push({ w: w, size: size }); widest = Math.max(widest, w); total += size * (1 + gap);
+    });
+    var pad = 10, c = makeCanvas(Math.ceil(widest) + pad * 2, Math.ceil(total) + pad * 2), g = c.getContext("2d");
+    var rtl = /[֐-ࣿ]/.test(lines.map(function (l) { return l.text; }).join("")), right = rtl || e.align === "right";
+    var y = pad;
+    lines.forEach(function (l, i) {
+      var size = m[i].size; g.font = (l.weight || 700) + " " + size + "px " + UI_FONT; g.fillStyle = l.color || "#222"; g.textBaseline = "top";
+      g.direction = rtl ? "rtl" : "ltr"; g.textAlign = right ? "right" : "left";
+      var tx = right ? c.width - pad : pad, sp = l.spacing || 0;
+      if (sp && !rtl && !right) { var xx = tx; String(l.text || "").split("").forEach(function (ch) { g.fillText(ch, xx, y); xx += g.measureText(ch).width + sp; }); }
+      else g.fillText(l.text || "", tx, y);
+      y += size * (1 + gap);
+    });
+    return { canvas: c, x: right ? e.x + e.w - c.width + pad : e.x - pad, y: e.y - pad };
+  }
+
   var RENDER = {
     background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
-    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow, topshade: renderTopShade
+    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow, topshade: renderTopShade,
+    card: renderCard, button: renderButton, arch: renderArch, dots: renderDots, leader: renderLeader, rich: renderRich
   };
 
   function elementById(spec, id) {
