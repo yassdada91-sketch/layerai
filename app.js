@@ -54,7 +54,7 @@
       if (look) fd.append("style", look);
       var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
       if (res.status === 429) return { limited: true, message: await limitMessage(res) };
-      if (!res.ok) throw new Error("planner " + res.status);
+      if (!res.ok) { var dt = ""; try { var ej = await res.json(); dt = ej && ej.detail ? " - " + ej.detail : ""; } catch (_) {} throw new Error("planner " + res.status + dt); }
       var spec = await res.json();
       if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
       return spec;
