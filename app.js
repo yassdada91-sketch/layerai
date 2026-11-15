@@ -165,25 +165,33 @@
     for (var i = 0; i < todo.length; i++) {
       var e = todo[i];
       if (progress) progress(i + 1, todo.length);
-      try {
-        var res = await fetchImage(e.description, e.cutout, e.style);
-        if (res.status === 429) {
-          out.failed = true; out.limitMsg = await limitMessage(res);
+      var attempts = e.cutout ? 2 : 1, stop = false;
+      for (var at = 0; at < attempts && !stop; at++) {
+        try {
+          var res = await fetchImage(e.description, e.cutout, e.style);
+          if (res.status === 429) {
+            out.failed = true; out.limitMsg = await limitMessage(res);
+            stop = true; break;
+          }
+          if (!res.ok) {
+            var why = "";
+            try { var j = await res.json(); why = j && j.error ? String(j.error) : ""; } catch (_) {}
+            throw new Error("image " + res.status + (why ? " " + why : ""));
+          }
+          var data = await res.json();
+          if (!data || !data.image) throw new Error("no image in answer");
+          e._img = await loadImage(data.image);
+          if (e.style === "background") e._img = trimBands(e._img);
+          // A cut-out that cannot be separated from its background: generate it once more (the generator sometimes ignores the green screen).
+          if (e.cutout && !cutOut(e)) { if (at + 1 < attempts) { e._img = null; continue; } }
+          break;
+        } catch (err) {
+          out.failed = true;
+          if (!out.reason) out.reason = (err && err.message) || "unknown";
           break;
         }
-        if (!res.ok) {
-          var why = "";
-          try { var j = await res.json(); why = j && j.error ? String(j.error) : ""; } catch (_) {}
-          throw new Error("image " + res.status + (why ? " " + why : ""));
-        }
-        var data = await res.json();
-        if (!data || !data.image) throw new Error("no image in answer");
-        e._img = await loadImage(data.image);
-        if (e.style === "background") e._img = trimBands(e._img);
-      } catch (err) {
-        out.failed = true;
-        if (!out.reason) out.reason = (err && err.message) || "unknown";
       }
+      if (stop) break;
     }
     // Copies of an element (e.src) reuse the picture of the element they come from.
     spec.elements.forEach(function (e) {
@@ -822,7 +830,7 @@
     spec._dropped = Object.keys(dropIds).length;
     if (spec._dropped) {
       spec.elements = spec.elements.filter(function (e) {
-        return !dropIds[e.id] && !dropIds[String(e.id).replace(/^(gs_|sh_)/, "")];
+        return !dropIds[e.id] && !dropIds[String(e.id).replace(/^(gs_|sh_)/, "")] && !(e.of && dropIds[e.of]);
       });
     }
     flowTextGroup(spec);
