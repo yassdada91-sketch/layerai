@@ -1,822 +1,798 @@
-/* LayerAI (static): prompt/image -> design spec -> one canvas per element -> layered PSD, all in the browser. */
-(function () {
-  "use strict";
+import os
+import re
+import time
+import tempfile
+import urllib.request
 
-  // ------------------------------------------------------------------ config
-  var PLANNER_URL = (window.LAYERAI_CONFIG && window.LAYERAI_CONFIG.PLANNER_URL) || "";
-  var DAILY_LIMIT = 100000; // limit effectively OFF while developing; put back to 3 before going public
-  var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
-  var currentSpec = null;
-  var currentLook = ""; // value of the "style" select (photo, painting, cartoon...)
+import cv2
+import gradio as gr
+import numpy as np
+import spaces
+import torch
+from PIL import Image
+from psd_tools import PSDImage
+from psd_tools.api.layers import PixelLayer
+from rembg import new_session, remove
+from scipy.optimize import linear_sum_assignment
+from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
+from torchvision.ops import batched_nms, nms
+from torchvision.ops import box_iou as tv_box_iou
+from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
-  // Text added to the picture prompt for each style (the Worker reads it from the "styleHint" field).
-  var STYLE_HINTS = {
-    photo: "photorealistic, high detail",
-    painting: "oil painting style, artistic brush strokes",
-    cartoon: "cartoon illustration style, bold outlines, flat colors",
-    cinematic: "cinematic film still, dramatic lighting",
-    digital: "digital art, vibrant colors, fantasy art",
-    educational: "educational illustration, clean vector, infographic style"
-  };
+from utils import (
+    TEXT_DROPS,
+    ERRORS,
+    BG_INFO,
+    box_iou,
+    build_main,
+    detect_text,
+    draw_points,
+    fill_background,
+    fit,
+    kernel,
+    overlap_frac,
+    safe,
+    soft_layer,
+    refine_layer,
+    reset_matte,
+    _MATTE_T,
+    _MATTE_ERR,
+)
 
-  // ----------------------------------------------------------------- planner
-  function demoSpec(prompt) {
-    var title = (prompt || "LayerAI").trim().slice(0, 40);
-    return {
-      width: 1280, height: 720,
-      elements: [
-        { id: "bg", kind: "background", name: "Background", x: 0, y: 0, w: 1280, h: 720, z: 0, color: "#1e3c72", color2: "#2a5298" },
-        { id: "bar", kind: "shape", name: "Accent bar", x: 60, y: 520, w: 700, h: 12, z: 1, color: "#ffb703" },
-        { id: "img1", kind: "image", name: "Main subject", x: 820, y: 120, w: 380, h: 480, z: 2, description: "main subject (AI image goes here)" },
-        { id: "t1", kind: "text", name: "Title", x: 60, y: 260, w: 700, h: 200, z: 3, text: title, font_size: 72, text_color: "#ffffff" }
-      ]
-    };
-  }
+MAX_DIM = 1024
+OUT_DIM = 1536
+MAX_OBJECTS = 60
+MAX_PERSONS = 10
+MAX_QUERIES = 10       # أقصى عدد عناصر في وصف المستخدم
+MODE_AUTO = "تلقائي (مقترح)"
+BG_AUTO = "تلقائي (يترك الأصل إن كانت الإزالة كبيرة)"
+BG_FILL = "ترميم الخلفية دائمًا"
+BG_KEEP = "إبقاء الأصل (لا يُزال الأشخاص من الخلفية)"
+MODE_DESIGN = "تصميم أو ملصق (بلا قص تلقائي لعنصر رئيسي)"
+MODE_PHOTO = "صورة فوتوغرافية (بلا استخراج نصوص)"
+MODE_ALL = "قص كل العناصر (تجريبي، أبطأ)"
+ALL_MAX = 40
+ALL_MIN_AREA = 0.0004
+ALL_MAX_AREA = 0.25
+REFINE_EDGES = False  # v25: تحسين الحواف التجريبي (guided filter) أنتج إطارًا ملونًا على الحواف، أُوقف
+MAX_LOGOS = 4
+GREEN = "هذا هو العنصر (أخضر)"
+RED = "عنصر منفصل / ليس من الرئيسي (أحمر)"
+KEEP = "إبقاء البكسلات تحت العناصر (قد تبقى بقايا)"
+CUT = "قص العناصر من الرئيسي (قد يظهر ثقب)"
+ALGO_NEW = "ترميم جديد v31 (ناعم + حبيبات)"
+ALGO_OLD = "ترميم قديم v27"
+# v31b: قناع النص من kmeans يلتقط لون الحبر فقط، فتبقى الحواف والتوهج أشباحًا في الخلفية.
+# نوسّع قناع النص عند المسح بنسبة من ارتفاعه (0 = تعطيل، يعود سلوك v31). قيمة تخمينية.
+TEXT_GROW_K = 0.15
+TEXT_GROW_MAX = 17
 
-  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+# كلمات في وصف المستخدم تعني "النصوص" (تُعالج بـ EasyOCR لا بـ OWL)
+TEXT_WORDS = {
+    "text", "texts", "the text", "the texts", "title", "titles", "the title",
+    "words", "writing", "letters", "caption", "captions", "headline", "all text",
+}
+TR_ID = "Helsinki-NLP/opus-mt-ar-en"
+_ARABIC = re.compile(r"[\u0600-\u06ff]")
 
-  async function limitMessage(res) {
-    try {
-      var j = await res.json();
-      if (j && typeof j.message === "string" && j.message) return j.message;
-    } catch (_) {}
-    return LIMIT_FALLBACK_MSG;
-  }
+# إعدادات الوصف المخصص
+CUSTOM_MIN_AREA = 0.004   # v41: كان 0.0015. أصغر مساحة صندوق (نسبة من الصورة)؛ يحيد المربعات الصغيرة (≈0.17%)
+                          # ويبقي الأزرار والأيقونات (≥3%). خفّضه إن أردت أيقونات صغيرة مثل ✓
+CUSTOM_FLOOR = 0.03       # أدنى درجة خام مقبولة إطلاقًا
+CUSTOM_CAND_REL = 0.3     # نقبل كمرشّحين الصناديق التي درجتها ≥ هذه النسبة من أعلى درجة للوصف
+CUSTOM_DBG = []           # تشخيص الوصف المخصص (يظهر في حقل الحالة)
+POINT_MAX_AREA = 0.06     # أكبر قناع (نسبة من الصورة) تقبله النقطة اليدوية إن وُجد أصغر منه
 
-  // The Worker reads: prompt, format (thumbnail, square, portrait, story, banner), style (photo, painting...).
-  async function plan(prompt, imageFile, format, look) {
-    if (!PLANNER_URL) return demoSpec(prompt);
-    try {
-      var fd = new FormData();
-      if (prompt) fd.append("prompt", prompt);
-      if (imageFile) fd.append("image", imageFile);
-      if (format) fd.append("format", format);
-      if (look) fd.append("style", look);
-      var res = await fetch(PLANNER_URL, { method: "POST", body: fd });
-      if (res.status === 429) return { limited: true, message: await limitMessage(res) };
-      if (!res.ok) { var dt = ""; try { var ej = await res.json(); dt = ej && ej.detail ? " - " + ej.detail : ""; } catch (_) {} throw new Error("planner " + res.status + dt); }
-      var spec = await res.json();
-      if (!spec || !Array.isArray(spec.elements)) throw new Error("bad spec");
-      return spec;
-    } catch (err) {
-      var d = demoSpec(prompt); d.fallback = true;
-      d.reason = (err && err.message) || "unknown";
-      return d;
-    }
-  }
 
-  function loadImage(b64) {
-    return new Promise(function (resolve, reject) {
-      var img = new Image();
-      img.onload = function () { resolve(img); };
-      img.onerror = function () { reject(new Error("image decode")); };
-      img.src = "data:image/jpeg;base64," + b64;
-    });
-  }
+def grow_text(m):
+    if TEXT_GROW_K <= 0:
+        return m
+    ys, _ = np.where(m)
+    if len(ys) == 0:
+        return m
+    bh = int(ys.max() - ys.min() + 1)
+    k = int(min(TEXT_GROW_MAX, TEXT_GROW_K * bh)) | 1
+    if k < 3:
+        return m
+    return cv2.dilate(m.astype(np.uint8), kernel(k)).astype(bool)
 
-  // One image request, with a single automatic retry after a network failure or a 5xx answer.
-  // cutout: falsy (keep the picture as it is), "green" / true (green screen) or "magenta" (magenta screen).
-  // style: "background" for a full scene background.
-  async function fetchImage(description, cutout, style) {
-    var url = PLANNER_URL.replace(/\/+$/, "") + "/image", lastErr = null, res = null;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        var fd = new FormData(); fd.append("description", description);
-        if (cutout) fd.append("cutout", cutout === "magenta" ? "magenta" : "green");
-        if (style) fd.append("style", style);
-        if (currentLook && STYLE_HINTS[currentLook]) fd.append("styleHint", STYLE_HINTS[currentLook]);
-        res = await fetch(url, { method: "POST", body: fd });
-        if (res.status >= 500 && attempt < 1) { await sleep(1500); continue; }
-        return res;
-      } catch (err) {
-        lastErr = err;
-        if (attempt < 1) await sleep(1500);
-      }
-    }
-    if (res) return res;
-    throw new Error(((lastErr && lastErr.message) || "network") + " (2 attempts)");
-  }
+# 0 = شخص، 1 = شعار/أيقونة، 2 = جسم عام (منتج/حيوان)
+QUERIES = [
+    "a photo of a person",
+    "a logo",
+    "an app icon",
+    "an emblem or badge",
+    "a product",
+    "an animal",
+]
+KIND = torch.tensor([0, 1, 1, 1, 2, 2])
 
-  // A generated background sometimes comes with smooth bands (white, grey, light blue...) along its edges, like a framed photo.
-  // From each edge, rows / columns that are smooth (low colour variation along the line) are a candidate band; it is cut only if it
-  // ends with a sharp jump of colour (at most 30% per side). Returns a canvas, or the picture itself when nothing is found.
-  function trimBands(img) {
-    var W = img.width, H = img.height, c = makeCanvas(W, H), g = c.getContext("2d");
-    g.drawImage(img, 0, 0);
-    var d = g.getImageData(0, 0, W, H).data;
-    function stats(len, at) {
-      var n = 0, s = [0, 0, 0], q = [0, 0, 0], step = Math.max(1, Math.floor(len / 64));
-      for (var i = 0; i < len; i += step) {
-        var o = at(i);
-        for (var k = 0; k < 3; k++) { var v = d[o + k]; s[k] += v; q[k] += v * v; }
-        n++;
-      }
-      var sd = 0, mean = [];
-      for (var k2 = 0; k2 < 3; k2++) { var m = s[k2] / n; mean.push(m); sd += Math.sqrt(Math.max(0, q[k2] / n - m * m)); }
-      return { sd: sd / 3, mean: mean };
-    }
-    var rows = [], cols = [];
-    for (var y = 0; y < H; y++) rows.push(stats(W, function (x) { return (y * W + x) * 4; }));
-    for (var x = 0; x < W; x++) cols.push(stats(H, function (yy) { return (yy * W + x) * 4; }));
-    function jump(a, b) { return (Math.abs(a.mean[0] - b.mean[0]) + Math.abs(a.mean[1] - b.mean[1]) + Math.abs(a.mean[2] - b.mean[2])) / 3; }
-    // arr: lines of the picture, from[i] gives the line index at distance i from the edge; returns the band thickness (0 = none)
-    function band(arr, len, at) {
-      var max = Math.floor(len * 0.3), n = 0;
-      while (n < max && arr[at(n)].sd < 6 && (n === 0 || jump(arr[at(n - 1)], arr[at(n)]) < 14)) n++; // smooth AND continuous in colour
-      if (n < 3 || n >= max) return 0;                       // nothing, or the whole outer third is smooth (sky, wall...): leave it
-      return jump(arr[at(n - 1)], arr[at(Math.min(len - 1, n + 2))]) > 18 ? n : 0;
-    }
-    // Fallback: a perfectly straight, crisp edge across the whole line (a flat band whose colour is not smooth enough for band()).
-    // crisp(i, ...): fraction of the line where pixels at distance i-1 and i+1 from the edge differ strongly.
-    function crisp(lineLen, nLines, px) {                    // px(line, j) -> offset of pixel j on the line at distance 'line' from the edge
-      var max = Math.floor(nLines * 0.3);
-      for (var i = 3; i < max; i++) {
-        var hit = 0, tot = 0, step = Math.max(1, Math.floor(lineLen / 80));
-        for (var j = 0; j < lineLen; j += step) {
-          var p = px(i - 1, j), q = px(i + 1, j);
-          var df = (Math.abs(d[p] - d[q]) + Math.abs(d[p + 1] - d[q + 1]) + Math.abs(d[p + 2] - d[q + 2])) / 3;
-          if (df > 40) hit++; tot++;
-        }
-        if (hit / tot >= 0.92) return i;
-      }
-      return 0;
-    }
-    var t = band(rows, H, function (i) { return i; }), b = band(rows, H, function (i) { return H - 1 - i; });
-    var l = band(cols, W, function (i) { return i; }), r = band(cols, W, function (i) { return W - 1 - i; });
-    if (!t && rows[0].sd < 8) t = crisp(W, H, function (i, x) { return (i * W + x) * 4; });
-    if (!b && rows[H - 1].sd < 8) b = crisp(W, H, function (i, x) { return ((H - 1 - i) * W + x) * 4; });
-    if (!l && cols[0].sd < 8) l = crisp(H, W, function (i, y) { return (y * W + i) * 4; });
-    if (!r && cols[W - 1].sd < 8) r = crisp(H, W, function (i, y) { return (y * W + (W - 1 - i)) * 4; });
-    if (t + b + l + r === 0) return img;
-    var nw = W - l - r, nh = H - t - b;
-    if (nw < W * 0.4 || nh < H * 0.4) return img;
-    var out = makeCanvas(nw, nh);
-    out.getContext("2d").drawImage(c, l, t, nw, nh, 0, 0, nw, nh);
-    return out;
-  }
+CHECKPOINT = "sam_vit_b_01ec64.pth"
+URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
 
-  // Ask the Worker for a real picture for each image element (one after the other).
-  // progress(i, total) is called before each request.
-  // Returns { failed, limitMsg, reason } (reason = short technical cause of the first failure).
-  async function addImages(spec, progress) {
-    var out = { failed: false, limitMsg: "", reason: "" };
-    if (!PLANNER_URL || spec.fallback) return out;
-    var todo = spec.elements.filter(function (e) { return e.kind === "image" && e.description; });
-    for (var i = 0; i < todo.length; i++) {
-      var e = todo[i];
-      if (progress) progress(i + 1, todo.length);
-      try {
-        var res = await fetchImage(e.description, e.cutout, e.style);
-        if (res.status === 429) {
-          out.failed = true; out.limitMsg = await limitMessage(res);
-          break;
-        }
-        if (!res.ok) {
-          var why = "";
-          try { var j = await res.json(); why = j && j.error ? String(j.error) : ""; } catch (_) {}
-          throw new Error("image " + res.status + (why ? " " + why : ""));
-        }
-        var data = await res.json();
-        if (!data || !data.image) throw new Error("no image in answer");
-        e._img = await loadImage(data.image);
-        if (e.style === "background") e._img = trimBands(e._img);
-      } catch (err) {
-        out.failed = true;
-        if (!out.reason) out.reason = (err && err.message) || "unknown";
-      }
-    }
-    // Copies of an element (e.src) reuse the picture of the element they come from.
-    spec.elements.forEach(function (e) {
-      if (!e.src) return;
-      var from = elementById(spec, e.src);
-      if (from && from._img) e._img = from._img;
-    });
-    return out;
-  }
 
-  // --------------------------------------------------------------- rendering
-  function makeCanvas(w, h) {
-    var c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
-    return c;
-  }
 
-  function roundRectPath(g, x, y, W, H, r) {
-    g.beginPath();
-    g.moveTo(x + r, y); g.arcTo(x + W, y, x + W, y + H, r); g.arcTo(x + W, y + H, x, y + H, r);
-    g.arcTo(x, y + H, x, y, r); g.arcTo(x, y, x + W, y, r); g.closePath();
-  }
+def get_sam_checkpoint():
+    """v31: موقع Meta انتهت شهادته (SSL)، فنحمّل من Hugging Face أولًا (نسخة مرآة رسمية
+    لنفس الملف)، ونرجع إلى الرابط الأصلي احتياطًا."""
+    if os.path.exists(CHECKPOINT):
+        return CHECKPOINT
+    try:
+        from huggingface_hub import hf_hub_download
 
-  // Removes the plain background of a picture (green screen, magenta screen or white), in place.
-  // Returns false (and changes nothing) if the result looks wrong.
-  function removeBackground(canvas) {
-    var W = canvas.width, H = canvas.height, g = canvas.getContext("2d");
-    var id = g.getImageData(0, 0, W, H), d = id.data, n = W * H;
-    // Background colour = average of the four corners (6x6 blocks).
-    var sr = 0, sg = 0, sb = 0, cnt = 0, bs = 6, cx = [0, W - bs], cy = [0, H - bs];
-    for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++)
-      for (var y = cy[b]; y < cy[b] + bs; y++) for (var x = cx[a]; x < cx[a] + bs; x++) {
-        var p = (y * W + x) * 4; sr += d[p]; sg += d[p + 1]; sb += d[p + 2]; cnt++;
-      }
-    var br = sr / cnt, bg = sg / cnt, bb = sb / cnt;
-    var chroma = (Math.max(br, bg, bb) - Math.min(br, bg, bb)) > 80; // coloured screen vs. white/grey
-    var T1 = chroma ? 60 : 22, T2 = chroma ? 130 : 55;               // fully background / fully subject
-    function dist(i) {
-      var dr = d[i] - br, dg = d[i + 1] - bg, db = d[i + 2] - bb;
-      return Math.sqrt(dr * dr + dg * dg + db * db);
-    }
-    var alpha = new Uint8ClampedArray(n); alpha.fill(255);
-    function setAlpha(idx) {
-      var dd = dist(idx * 4);
-      alpha[idx] = dd <= T1 ? 0 : Math.round((dd - T1) / (T2 - T1) * 255);
-    }
-    if (chroma) {
-      for (var i = 0; i < n; i++) if (dist(i * 4) < T2) setAlpha(i);
-    } else {
-      // white/grey background: only what is connected to the border is background
-      var seen = new Uint8Array(n), stack = new Int32Array(n), sp = 0;
-      function push(idx) { if (!seen[idx] && dist(idx * 4) < T2) { seen[idx] = 1; stack[sp++] = idx; } }
-      for (var x2 = 0; x2 < W; x2++) { push(x2); push((H - 1) * W + x2); }
-      for (var y2 = 0; y2 < H; y2++) { push(y2 * W); push(y2 * W + W - 1); }
-      while (sp > 0) {
-        var idx = stack[--sp]; setAlpha(idx);
-        var px = idx % W, py = (idx - px) / W;
-        if (px > 0) push(idx - 1); if (px < W - 1) push(idx + 1);
-        if (py > 0) push(idx - W); if (py < H - 1) push(idx + W);
-      }
-    }
-    var opaque = 0;
-    for (var k = 0; k < n; k++) {
-      var al = alpha[k];
-      if (al > 128) opaque++;
-      d[k * 4 + 3] = al;
-    }
-    var frac = opaque / n;
-    if (frac < 0.03 || frac > 0.97) return false; // nothing or everything removed: keep the original
+        return hf_hub_download("ybelkada/segment-anything", "checkpoints/sam_vit_b_01ec64.pth")
+    except Exception as e:
+        print(f"[warn] HF checkpoint failed: {e}")
+    urllib.request.urlretrieve(URL, CHECKPOINT)
+    return CHECKPOINT
 
-    // Pixels within R px of a transparent pixel (the outer edge of the subject).
-    function markNear(R) {
-      var near = new Uint8Array(n);
-      for (var yy = 0; yy < H; yy++) {
-        for (var xx = 0; xx < W; xx++) {
-          if (d[(yy * W + xx) * 4 + 3] >= 40) continue;
-          var y0 = Math.max(0, yy - R), y1 = Math.min(H - 1, yy + R), x0 = Math.max(0, xx - R), x1 = Math.min(W - 1, xx + R);
-          for (var ny = y0; ny <= y1; ny++) for (var nx = x0; nx <= x1; nx++) near[ny * W + nx] = 1;
-        }
-      }
-      return near;
-    }
 
-    if (chroma) {
-      var keyGreen = bg > br + 40 && bg > bb + 40;     // green screen
-      var keyMagenta = br > bg + 40 && bb > bg + 40;   // magenta screen (used for green plants)
+sam = sam_model_registry["vit_b"](checkpoint=get_sam_checkpoint())
+predictor = SamPredictor(sam)
 
-      if (keyGreen) {
-        // Step 1: remove green CONNECTED to the transparent background (green reflections, glow under the object).
-        // Green in the middle of the object is not reached, so it is kept. If more than 40% of the object would go, undo.
-        var seen2 = new Uint8Array(n), st2 = new Int32Array(n), sp2 = 0, removed = new Int32Array(n), rc = 0;
-        for (var s0 = 0; s0 < n; s0++) if (d[s0 * 4 + 3] < 40) { seen2[s0] = 1; st2[sp2++] = s0; }
-        var greenish = function (ix) {
-          var o2 = ix * 4, rr = d[o2], g2 = d[o2 + 1], b2 = d[o2 + 2];
-          return (g2 > 90 && g2 > Math.max(rr, b2) + 30) || (g2 > 95 && g2 > rr + 4 && g2 > b2 + 55); // green, or yellow-green / olive leftovers
-        };
-        var spread = function (ix) {
-          if (!seen2[ix] && d[ix * 4 + 3] >= 40 && greenish(ix)) { seen2[ix] = 1; removed[rc++] = ix; st2[sp2++] = ix; }
-        };
-        while (sp2 > 0) {
-          var cur = st2[--sp2], cxx = cur % W, cyy = (cur - cxx) / W;
-          if (cxx > 0) spread(cur - 1); if (cxx < W - 1) spread(cur + 1);
-          if (cyy > 0) spread(cur - W); if (cyy < H - 1) spread(cur + W);
-        }
-        var nonBg = 0;
-        for (var nb = 0; nb < n; nb++) if (d[nb * 4 + 3] >= 40) nonBg++;      // everything that is not (almost) transparent yet, also half-transparent leftovers
-        if (nonBg - rc >= n * 0.03) {   // something clearly remains after the removal (a small object on a big leftover green area is fine)
-          for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
-        }
-      }
+_all_gen = [None]
 
-      if (keyGreen || keyMagenta) {
-        // Step 2: edge clean-up (within 12px of a transparent pixel, or half-transparent pixels).
-        var near = markNear(12);
-        for (var j = 0; j < n; j++) {
-          if (d[j * 4 + 3] === 0) continue;
-          var o = j * 4, r = d[o], gg = d[o + 1], bl = d[o + 2];
-          if (keyGreen) {
-            // Dark olive / dark green leftovers of the shadow the generator casts on the green screen (e.g. under a shoe):
-            // clearly saturated yellow-green or green pixels are dropped ANYWHERE. White/grey/black objects are never that saturated.
-            if (gg >= r && gg > bl && gg > 25 && (gg - bl) > gg * 0.72) { d[o + 3] = 0; continue; }
-            var mx = Math.max(r, bl);
-            if (gg > mx) {
-              if (near[j] && gg > mx + 40 && gg > 110) d[o + 3] = 0;     // clearly (and brightly) green near the edge: drop it; dark pixels are kept
-              else if (near[j] || d[o + 3] < 255) d[o + 1] = mx;         // fringe: remove the green tint
-            }
-          } else {
-            var lo = Math.min(r, bl);
-            // Magenta-hued pixels anywhere (the shadow the generator leaves on the screen, dark purple/red patches): drop them.
-            // Real objects almost never have red AND blue both well above green; pink cups (green high) and leaves are safe.
-            if (lo > 25 && lo > gg * 1.6 + 15) { d[o + 3] = 0; continue; }
-            if (lo > gg && (near[j] || d[o + 3] < 255)) {
-              var ex = lo - gg;
-              if (near[j] && ex > 60 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
-              else { d[o] = Math.round(r - ex * 0.95); d[o + 2] = Math.round(bl - ex * 0.95); } // fringe: remove the magenta tint
-            }
-          }
-        }
-      }
 
-      if (keyGreen) {
-        // Step 3: gentle green-spill removal over the WHOLE object. A white or light object shot on a green screen
-        // picks up a green tint inside (not only on its edge). Light pixels (red/blue above 110) with a SMALL green
-        // excess (up to 45) lose most of it. Strongly green pixels (real green parts of the object) are left alone.
-        for (var m = 0; m < n; m++) {
-          var o3 = m * 4;
-          if (d[o3 + 3] === 0) continue;
-          var mx3 = Math.max(d[o3], d[o3 + 2]), ex3 = d[o3 + 1] - mx3;
-          if (ex3 > 0 && ex3 <= 45 && mx3 > 110) d[o3 + 1] = Math.round(mx3 + ex3 * 0.15);
-        }
-      }
+def get_all_generator():
+    """يُنشأ عند أول استعمال فقط (لا يؤثر على بقية الأوضاع)."""
+    if _all_gen[0] is None:
+        _all_gen[0] = SamAutomaticMaskGenerator(
+            sam,
+            points_per_side=24,
+            pred_iou_thresh=0.88,
+            stability_score_thresh=0.92,
+            min_mask_region_area=60,
+        )
+    return _all_gen[0]
 
-      if (keyGreen) {
-        // Step 3b (green): pixels that are semi-transparent but NOT at the outer edge (e.g. a white sole that looks
-        // a bit like the screen) become fully opaque, so the object no longer fades inside.
-        for (var m4 = 0; m4 < n; m4++) {
-          var o6 = m4 * 4, a6 = d[o6 + 3];
-          if (a6 > 0 && a6 < 255 && !near[m4]) {
-            // clearly green leftovers of the screen (a lighter patch of it) are dropped; everything else becomes solid
-            d[o6 + 3] = (d[o6 + 1] > Math.max(d[o6], d[o6 + 2]) + 40) ? 0 : 255;
-          }
-        }
-      }
 
-      if (keyMagenta) {
-        // Step 3 (magenta): gentle pink-spill removal over the WHOLE object. A white or light object shot on a magenta
-        // screen picks up a pink tint. Light pixels (green above 110) with a SMALL red/blue excess (up to 60) lose most of it.
-        // Strongly coloured pixels (real pink or purple parts) and green leaves are left alone.
-        for (var m2 = 0; m2 < n; m2++) {
-          var o4 = m2 * 4;
-          if (d[o4 + 3] === 0) continue;
-          var gg4 = d[o4 + 1], lo4 = Math.min(d[o4], d[o4 + 2]), ex4 = lo4 - gg4;
-          if (ex4 > 0 && ex4 <= 110 && gg4 > 120) {
-            d[o4] = Math.round(Math.max(gg4, d[o4] - ex4 * 0.9));
-            d[o4 + 2] = Math.round(Math.max(gg4, d[o4 + 2] - ex4 * 0.9));
-          }
-        }
-        // Step 4 (magenta): leftover pure-magenta pixels inside the object (gaps between leaves) become transparent.
-        for (var m3 = 0; m3 < n; m3++) {
-          var o5 = m3 * 4;
-          if (d[o5 + 3] !== 0 && dist(o5) < T1) d[o5 + 3] = 0;
-        }
-      }
+def sam_all_masks(arr, h, w):
+    """كل القطع التي يجدها SAM، من الأكبر إلى الأصغر، بعد حذف الصغيرة جدًا والكبيرة جدًا."""
+    out = []
+    for d in get_all_generator().generate(arr):
+        m = d["segmentation"].astype(bool)
+        a = int(m.sum())
+        if a < ALL_MIN_AREA * h * w or a > ALL_MAX_AREA * h * w:
+            continue
+        out.append((a, m))
+    out.sort(key=lambda t: -t[0])
+    return [m for _, m in out]
 
-      if (keyGreen || keyMagenta) {
-      // Step 5 (green + magenta): remove tiny isolated fragments (black specks / pieces floating away from the subject).
-      var lab = new Uint8Array(n), stk = new Int32Array(n), comp = new Int32Array(n);
-      var minSize = Math.max(400, Math.round(opaque * 0.004));
-      for (var s1 = 0; s1 < n; s1++) {
-        if (lab[s1] || d[s1 * 4 + 3] < 40) continue;
-        var top = 0, cc = 0; stk[top++] = s1; lab[s1] = 1;
-        while (top > 0) {
-          var c0 = stk[--top]; comp[cc++] = c0;
-          var cx0 = c0 % W, cy0 = (c0 - cx0) / W;
-          for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
-            if (!dx && !dy) continue;
-            var nx2 = cx0 + dx, ny2 = cy0 + dy;
-            if (nx2 < 0 || ny2 < 0 || nx2 >= W || ny2 >= H) continue;
-            var ni = ny2 * W + nx2;
-            if (!lab[ni] && d[ni * 4 + 3] >= 40) { lab[ni] = 1; stk[top++] = ni; }
-          }
-        }
-        var dropIt = cc < minSize;
-        if (!dropIt && cc < opaque * 0.08) {
-          // a medium-small piece that is almost black = leftover shadow streak, not part of the object
-          var br2 = 0;
-          for (var q3 = 0; q3 < cc; q3++) { var o7 = comp[q3] * 4; br2 += Math.max(d[o7], d[o7 + 1], d[o7 + 2]); }
-          if (br2 / cc < 70) dropIt = true;
-        }
-        if (dropIt) for (var q2 = 0; q2 < cc; q2++) d[comp[q2] * 4 + 3] = 0;
-      }
-      }
-    }
-    g.putImageData(id, 0, 0);
-    return true;
-  }
+OWL_ID = "google/owlv2-base-patch16-ensemble"
+owl_proc = Owlv2Processor.from_pretrained(OWL_ID)
+owl = Owlv2ForObjectDetection.from_pretrained(OWL_ID).eval()
 
-  // Bounding box of the visible part (alpha > 40) of a canvas, or null.
-  function visibleBox(canvas) {
-    var W = canvas.width, H = canvas.height, d = canvas.getContext("2d").getImageData(0, 0, W, H).data;
-    var x0 = W, y0 = H, x1 = -1, y1 = -1;
-    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
-      if (d[(y * W + x) * 4 + 3] > 40) {
-        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-      }
-    }
-    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
-  }
+session = new_session("isnet-general-use")
 
-  function renderBackground(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    if (e.color2) {
-      var grad = g.createLinearGradient(0, 0, 0, c.height);
-      grad.addColorStop(0, e.color || "#ffffff"); grad.addColorStop(1, e.color2);
-      g.fillStyle = grad;
-    } else g.fillStyle = e.color || "#ffffff";
-    g.fillRect(0, 0, c.width, c.height);
-    return { canvas: c, x: e.x, y: e.y };
-  }
 
-  function renderShape(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    g.fillStyle = e.color || "#ffffff"; g.fillRect(0, 0, c.width, c.height);
-    return { canvas: c, x: e.x, y: e.y };
-  }
+# دالة فارغة: ZeroGPU يشترط وجود دالة مزخرفة، ولا تُستدعى أبدًا
+@spaces.GPU(duration=1)
+def _gpu_placeholder():
+    return None
 
-  function renderCircle(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    g.fillStyle = e.color || "#ffffff";
-    g.beginPath();
-    g.ellipse(c.width / 2, c.height / 2, c.width / 2, c.height / 2, 0, 0, Math.PI * 2);
-    g.fill();
-    return { canvas: c, x: e.x, y: e.y };
-  }
 
-  function renderFrame(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), lw = e.line || 8;
-    g.strokeStyle = e.color || "#ffffff"; g.lineWidth = lw;
-    roundRectPath(g, lw / 2, lw / 2, c.width - lw, c.height - lw, 24);
-    g.stroke();
-    return { canvas: c, x: e.x, y: e.y };
-  }
+# ---------------------------------------------------------------- وصف المستخدم
+_tr = [None]
 
-  // Soft drop shadow. With e.of = id of an image whose background was removed, the shadow follows its shape;
-  // otherwise it is the shadow of a rounded rectangle. Only the blur is kept (the shape itself is drawn off-canvas).
-  function renderShadow(e) {
-    var pad = 80, c = makeCanvas(e.w + pad * 2, e.h + pad * 2), g = c.getContext("2d");
-    g.shadowColor = e.color || "rgba(0,0,0,0.9)";
-    g.shadowBlur = 40; g.shadowOffsetX = 10000; g.shadowOffsetY = 20;
-    var target = null;
-    if (e.of && currentSpec) {
-      for (var i = 0; i < currentSpec.elements.length; i++) if (currentSpec.elements[i].id === e.of) target = currentSpec.elements[i];
-    }
-    if (target) renderImage(target); // makes sure the cut-out exists
-    if (target && target._cut) {
-      g.drawImage(target._cut, pad - 10000, pad);
-    } else {
-      g.fillStyle = "#000000";
-      roundRectPath(g, pad - 10000, pad, e.w, e.h, 24);
-      g.fill();
-    }
-    return { canvas: c, x: e.x - pad, y: e.y - pad };
-  }
 
-  // Text effects (e.fx): gold, chrome, neon. Drawn in ONE layer: depth (stacked copies), dark outline, glow, gradient fill, thin highlight.
-  var TEXT_FX = {
-    gold:   { stops: ["#fff6bf", "#ffd84a", "#f2a413", "#b35a05"], stroke: "#5a2800", depth: "#8a4308", glow: "rgba(255,170,30,0.55)" },
-    chrome: { stops: ["#ffffff", "#d6e6ff", "#7ea3d8", "#27508f"], stroke: "#0a1c46", depth: "#12306e", glow: "rgba(120,170,255,0.55)" },
-    neon:   { stops: ["#ffffff", "#e6ffff", "#aef6ff", "#6fe9ff"], stroke: "#00c8ff", depth: null, glow: "rgba(0,229,255,0.95)" }
-  };
-  function textPad(e) { var s = e.font_size || 48; return Math.round(s * (TEXT_FX[e.fx] ? 0.4 : 0.15)); }
+def translate_ar(texts):
+    """ترجمة عربية ← إنجليزية بنموذج Marian مجاني (يُحمَّل عند أول استعمال فقط).
+    عند أي فشل نرجع النص الأصلي."""
+    try:
+        if _tr[0] is None:
+            from transformers import MarianMTModel, MarianTokenizer
 
-  function renderText(e) {
-    var size = e.font_size || 48, fx = TEXT_FX[e.fx] || null, pad = textPad(e);
-    var fontFamily = '"Segoe UI", Tahoma, "Noto Sans Arabic", "DejaVu Sans", Arial, sans-serif';
-    var probe = makeCanvas(10, 10).getContext("2d");
-    probe.font = "bold " + size + "px " + fontFamily;
-    var words = String(e.text || "").split(/\s+/), lines = [], line = "", maxW = Math.max(e.w, size);
-    words.forEach(function (w) {
-      var t = line ? line + " " + w : w;
-      if (probe.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t;
-    });
-    if (line) lines.push(line);
-    var lh = Math.round(size * 1.3), widest = 0;
-    lines.forEach(function (l) { widest = Math.max(widest, probe.measureText(l).width); });
-    var c = makeCanvas(Math.ceil(widest) + pad * 2, lines.length * lh + pad * 2), g = c.getContext("2d");
-    g.font = "bold " + size + "px " + fontFamily;
-    g.fillStyle = e.text_color || "#000000"; g.textBaseline = "top";
-    var rtl = /[\u0590-\u08FF]/.test(e.text || "");
-    g.direction = rtl ? "rtl" : "ltr"; g.textAlign = rtl ? "right" : "left";
-    var tx = rtl ? c.width - pad : pad;
-    if (!fx) {
-      lines.forEach(function (l, i) { g.fillText(l, tx, pad + i * lh); });
-    } else {
-      g.lineJoin = "round"; g.miterLimit = 2;
-      var depthN = Math.max(3, Math.round(size * 0.07)), sw = Math.max(4, Math.round(size * 0.1));
-      lines.forEach(function (l, i) {
-        var y = pad + i * lh;
-        if (fx.depth) {                                        // extrusion: stacked dark copies going down-right
-          g.strokeStyle = fx.depth; g.fillStyle = fx.depth; g.lineWidth = sw;
-          for (var k = depthN; k >= 1; k--) { g.strokeText(l, tx + k * 0.6, y + k); g.fillText(l, tx + k * 0.6, y + k); }
-        }
-        g.save();
-        g.shadowColor = fx.glow; g.shadowBlur = Math.round(size * (e.fx === "neon" ? 0.35 : 0.22));
-        g.strokeStyle = fx.stroke; g.lineWidth = sw; g.strokeText(l, tx, y);  // outline (+ glow)
-        g.restore();
-        var gr = g.createLinearGradient(0, y, 0, y + size * 1.05);           // gradient fill
-        gr.addColorStop(0, fx.stops[0]); gr.addColorStop(0.35, fx.stops[1]); gr.addColorStop(0.62, fx.stops[2]); gr.addColorStop(1, fx.stops[3]);
-        g.fillStyle = gr; g.fillText(l, tx, y);
-      });
-    }
-    return { canvas: c, x: e.x - pad, y: e.y - pad };
-  }
+            tok = MarianTokenizer.from_pretrained(TR_ID)
+            mdl = MarianMTModel.from_pretrained(TR_ID).eval()
+            _tr[0] = (tok, mdl)
+        tok, mdl = _tr[0]
+        batch = tok(texts, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            gen = mdl.generate(**batch, max_new_tokens=32, num_beams=4)
+        outs = tok.batch_decode(gen, skip_special_tokens=True)
+        return [o.strip().lower().rstrip(".") or t for o, t in zip(outs, texts)]
+    except Exception as e:
+        print(f"[warn] translate failed: {e}")
+        ERRORS.append(f"translate: {str(e)[:80]}")
+        return texts
 
-  function renderImagePlaceholder(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    g.fillStyle = "rgba(255,255,255,0.18)"; g.strokeStyle = "rgba(255,255,255,0.8)"; g.lineWidth = 4;
-    roundRectPath(g, 2, 2, c.width - 4, c.height - 4, 24);
-    g.fill(); g.stroke();
-    g.fillStyle = "#fff"; g.font = "20px sans-serif"; g.textBaseline = "top";
-    g.fillText(String(e.description || e.name).slice(0, 36), 16, 16);
-    return { canvas: c, x: e.x, y: e.y };
-  }
 
-  function drawCover(g, img, W, H) {
-    var k = Math.max(W / img.width, H / img.height), dw = img.width * k, dh = img.height * k;
-    g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  }
+def parse_desc(desc):
+    """يقسّم الوصف إلى عناصر (فاصلة / و / and / سطر جديد) ويترجم العربي إلى الإنجليزية."""
+    parts = re.split(r"\s*[,\n،;؛]\s*|\s+و\s+|\s+and\s+", desc or "")
+    items = [p.strip() for p in parts if p and p.strip()][:MAX_QUERIES]
+    ar_idx = [i for i, t in enumerate(items) if _ARABIC.search(t)]
+    if ar_idx:
+        tr = translate_ar([items[i] for i in ar_idx])
+        for i, t in zip(ar_idx, tr):
+            items[i] = t
+    seen, out = set(), []
+    for t in items:
+        t = t.lower()
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
-  // Cut-out: remove the plain background on a work copy (max 768px), crop to the visible part,
-  // then fit it inside the layer box (with a small margin). Returns a canvas of e.w x e.h, or null.
-  //   e.align = "bottom": the object stands at the bottom of the box (instead of being centered).
-  //   e.mirror = true: the object is drawn in the left corner and mirrored in the right corner (e.g. plants framing a scene).
-  function cutOut(e) {
-    var img = e._img, s = Math.min(1, 768 / Math.max(img.width, img.height));
-    var work = makeCanvas(img.width * s, img.height * s), wg = work.getContext("2d");
-    wg.drawImage(img, 0, 0, work.width, work.height);
-    if (!removeBackground(work)) return null;
-    var box = visibleBox(work);
-    if (!box || box.w < 20 || box.h < 20) return null;
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), m = 20;
-    var boxW = e.mirror ? c.width / 2 : c.width;
-    var k = Math.min((boxW - m * 2) / box.w, (c.height - m * 2) / box.h);
-    var dw = box.w * k, dh = box.h * k;
-    var dx = e.mirror ? 0 : (boxW - dw) / 2;
-    var dy = e.align === "bottom" ? c.height - dh - m : (c.height - dh) / 2;
-    g.imageSmoothingQuality = "high";
-    g.drawImage(work, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
-    if (e.mirror) {
-      g.save(); g.translate(c.width, 0); g.scale(-1, 1);
-      g.drawImage(work, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
-      g.restore();
-    }
-    return c;
-  }
 
-  // Colour harmony: cut-out elements (subject, props) are generated with their own lighting. A gentle tint toward the average
-  // colour of the scene picture, a little less saturation and a slight brightness match make them sit in the scene.
-  // HARMONIZE = strength (0 = off). Only used when the design has a scene picture ("bgimg").
-  var HARMONIZE = 0.55;
+def owl_custom(img, queries, thr=0.15, min_area=CUSTOM_MIN_AREA):
+    """v40: توزيع أمثل بين الأوصاف والصناديق. كل وصف يأخذ صندوقًا واحدًا، ولا يتشارك
+    وصفان الصندوق نفسه (كان وصفان يختاران نفس العنصر ويضيع الثاني).
+    الدرجات تُطبَّع لكل وصف (درجة الصندوق ÷ أعلى درجة للوصف) ثم تُحلّ مسألة التعيين
+    (linear_sum_assignment). حساسية الوصف (thr) تحدد أدنى درجة مطبَّعة = 2×thr.
+    يرجع [(صندوق، درجة خام، وصف)]."""
+    w, h = img.size
+    inputs = owl_proc(text=[queries], images=img, return_tensors="pt")
+    with torch.no_grad():
+        out = owl(**inputs)
+    probs = torch.sigmoid(out.logits[0])  # [N, عدد الأوصاف]
+    cx, cy, bw, bh = out.pred_boxes[0].unbind(-1)
+    S = max(h, w)  # الصورة تُحشى إلى مربع
+    boxes = torch.stack(
+        [(cx - bw / 2) * S, (cy - bh / 2) * S, (cx + bw / 2) * S, (cy + bh / 2) * S], dim=-1
+    )
+    boxes[:, 0::2] = boxes[:, 0::2].clamp(0, w - 1)
+    boxes[:, 1::2] = boxes[:, 1::2].clamp(0, h - 1)
+    bw_ = boxes[:, 2] - boxes[:, 0]
+    bh_ = boxes[:, 3] - boxes[:, 1]
+    valid = (bw_ >= 6) & (bh_ >= 6) & (bw_ * bh_ >= min_area * h * w)
+    pv = probs * valid[:, None].float()  # الصناديق الصغيرة/المنحلة تصير درجتها صفرًا
 
-  function sceneTone(spec) {
-    var bg = elementById(spec, "bgimg");
-    if (!HARMONIZE || !bg || !bg._img) return null;
-    var c = makeCanvas(16, 16), g = c.getContext("2d");
-    drawCover(g, bg._img, 16, 16);
-    var d = g.getImageData(0, 0, 16, 16).data, r = 0, gg = 0, b = 0, n = d.length / 4;
-    for (var i = 0; i < d.length; i += 4) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; }
-    r /= n; gg /= n; b /= n;
-    var lum = 0.299 * r + 0.587 * gg + 0.114 * b;
-    return lum < 20 ? null : { r: r, g: gg, b: b, lum: lum };
-  }
+    tops, cand = [], []
+    for qi, q in enumerate(queries):
+        sc = pv[:, qi]
+        top = float(sc.max())
+        tops.append(top)
+        CUSTOM_DBG.append(f"{q}:{top:.2f}")
+        if top < CUSTOM_FLOOR:
+            continue
+        idx = (sc >= max(CUSTOM_FLOOR, CUSTOM_CAND_REL * top)).nonzero().flatten()
+        keep = nms(boxes[idx], sc[idx], 0.5)
+        cand += idx[keep].tolist()
 
-  function harmonizeCanvas(c, tone) {
-    var s = HARMONIZE, g = c.getContext("2d"), id = g.getImageData(0, 0, c.width, c.height), d = id.data;
-    var mr = 1 - s + s * (tone.r / tone.lum), mg = 1 - s + s * (tone.g / tone.lum), mb = 1 - s + s * (tone.b / tone.lum);
-    var bright = 1 + (tone.lum / 128 - 1) * s * 0.5, ds = s * 0.6;
-    for (var i = 0; i < d.length; i += 4) {
-      if (d[i + 3] === 0) continue;
-      var r = d[i], gg = d[i + 1], b = d[i + 2], l = 0.299 * r + 0.587 * gg + 0.114 * b;
-      r += (l - r) * ds; gg += (l - gg) * ds; b += (l - b) * ds;
-      d[i] = Math.max(0, Math.min(255, Math.round(r * mr * bright)));
-      d[i + 1] = Math.max(0, Math.min(255, Math.round(gg * mg * bright)));
-      d[i + 2] = Math.max(0, Math.min(255, Math.round(b * mb * bright)));
-    }
-    g.putImageData(id, 0, 0);
-  }
+    qs_ok = [qi for qi, t in enumerate(tops) if t >= CUSTOM_FLOOR]
+    if not qs_ok or not cand:
+        return []
 
-  function flipCanvas(src) {
-    var c = makeCanvas(src.width, src.height), g = c.getContext("2d");
-    g.translate(c.width, 0); g.scale(-1, 1); g.drawImage(src, 0, 0);
-    return c;
-  }
+    # دمج الصناديق المتشابهة بين الأوصاف (IoU ≥ 0.6) في صندوق واحد
+    uniq = []
+    for i in cand:
+        if all(float(tv_box_iou(boxes[i:i + 1], boxes[j:j + 1])[0, 0]) < 0.6 for j in uniq):
+            uniq.append(i)
 
-  function renderImage(e) {
-    if (e._layer) return e._layer;
-    if (!e._img) return renderImagePlaceholder(e);
-    var c = null;
-    if (e.cutout) {
-      c = cutOut(e);
-      if (c && e.flip) c = flipCanvas(c);
-      if (c && currentSpec && currentSpec._tone) harmonizeCanvas(c, currentSpec._tone);
-      if (c) e._cut = c;
-    }
-    if (!c) {
-      c = makeCanvas(e.w, e.h);
-      var g = c.getContext("2d"), rad = typeof e.radius === "number" ? e.radius : 24;
-      g.save();
-      if (rad > 0) { roundRectPath(g, 0, 0, c.width, c.height, rad); g.clip(); }
-      drawCover(g, e._img, c.width, c.height);
-      g.restore();
-    }
-    e._layer = { canvas: c, x: e.x, y: e.y };
-    return e._layer;
-  }
+    M = np.zeros((len(qs_ok), len(uniq)), np.float32)  # الدرجة المطبَّعة
+    R = np.zeros_like(M)                                # الدرجة الخام
+    for c, j in enumerate(uniq):
+        near = tv_box_iou(boxes[j:j + 1], boxes)[0] >= 0.6
+        for r, qi in enumerate(qs_ok):
+            raw = float(pv[near, qi].max())
+            R[r, c] = raw
+            M[r, c] = raw / tops[qi]
 
-  // Sunlight rays drawn by code (no AI picture): a soft glow in the top-right corner and 7 translucent beams.
-  function renderRays(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    var ox = c.width * 0.8, oy = -c.height * 0.1, L = c.height * 1.8;
-    var glow = g.createRadialGradient(ox, oy, 0, ox, oy, c.height * 0.9);
-    glow.addColorStop(0, "rgba(255,226,140,0.30)"); glow.addColorStop(1, "rgba(255,226,140,0)");
-    g.fillStyle = glow; g.fillRect(0, 0, c.width, c.height);
-    try { g.filter = "blur(" + Math.max(6, Math.round(c.width * 0.012)) + "px)"; } catch (_) {}
-    for (var i = 0; i < 7; i++) {
-      var a = 0.12 + i * 0.14, hw = 0.03 + (i % 3) * 0.015;
-      var x1 = ox - Math.sin(a - hw) * L, y1 = oy + Math.cos(a - hw) * L;
-      var x2 = ox - Math.sin(a + hw) * L, y2 = oy + Math.cos(a + hw) * L;
-      var gr = g.createLinearGradient(ox, oy, ox - Math.sin(a) * L, oy + Math.cos(a) * L);
-      gr.addColorStop(0, "rgba(255,226,140,0.30)"); gr.addColorStop(1, "rgba(255,226,140,0)");
-      g.fillStyle = gr; g.beginPath(); g.moveTo(ox, oy); g.lineTo(x1, y1); g.lineTo(x2, y2); g.closePath(); g.fill();
-    }
-    return { canvas: c, x: e.x, y: e.y };
-  }
+    rows, cols = linear_sum_assignment(-M)
+    min_norm = max(0.1, 2.0 * thr)
+    res = []
+    for r, c in zip(rows, cols):
+        if R[r, c] < CUSTOM_FLOOR or M[r, c] < min_norm:
+            continue
+        res.append((boxes[uniq[c]].tolist(), float(R[r, c]), queries[qs_ok[r]]))
+    res.sort(key=lambda t: -t[1])
+    return res
 
-  // Soft elliptical shadow on the ground (under the feet of a subject).
-  function renderGroundShadow(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d"), r = c.width / 2;
-    g.translate(c.width / 2, c.height / 2); g.scale(1, c.height / c.width);
-    var gr = g.createRadialGradient(0, 0, 0, 0, 0, r);
-    gr.addColorStop(0, "rgba(0,0,0,0.75)"); gr.addColorStop(0.55, "rgba(0,0,0,0.35)"); gr.addColorStop(1, "rgba(0,0,0,0)");
-    g.fillStyle = gr; g.fillRect(-r, -r, r * 2, r * 2);
-    return { canvas: c, x: e.x, y: e.y };
-  }
 
-  // Soft dark gradient at the top (behind the title of scene designs).
-  function renderTopShade(e) {
-    var c = makeCanvas(e.w, e.h), g = c.getContext("2d");
-    var gr = g.createLinearGradient(0, 0, 0, c.height);
-    gr.addColorStop(0, "rgba(0,0,0,0.85)"); gr.addColorStop(0.6, "rgba(0,0,0,0.35)"); gr.addColorStop(1, "rgba(0,0,0,0)");
-    g.fillStyle = gr; g.fillRect(0, 0, c.width, c.height);
-    return { canvas: c, x: e.x, y: e.y };
-  }
+def add_layer(psd, img, name, left=0, top=0, visible=True):
+    layer = PixelLayer.frompil(img, psd, top=top, left=left)
+    layer.name = name
+    psd.append(layer)
+    if not visible:
+        try:
+            layer.visible = False
+        except Exception as e:
+            ERRORS.append(f"hide: {str(e)[:60]}")
 
-  var RENDER = {
-    background: renderBackground, shape: renderShape, text: renderText, image: renderImage,
-    circle: renderCircle, frame: renderFrame, shadow: renderShadow, rays: renderRays, groundshadow: renderGroundShadow, topshade: renderTopShade
-  };
 
-  function elementById(spec, id) {
-    for (var i = 0; i < spec.elements.length; i++) if (spec.elements[i].id === id) return spec.elements[i];
-    return null;
-  }
+# ---------------------------------------------------------------- UI events
+def on_upload(img):
+    if img is None:
+        return None, None, []
+    full = fit(img, OUT_DIM)
+    return full, fit(full, MAX_DIM), []
 
-  function hexLum(h) {
-    var m = /^#?([0-9a-f]{6})$/i.exec(String(h || ""));
-    if (!m) return 0.5;
-    var n = parseInt(m[1], 16);
-    return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
-  }
 
-  // Full-background designs ("bgimg" + "overlay" layers): measure the real brightness of the picture
-  // behind the text, darken it with the overlay accordingly, and use white text (black shadow),
-  // so that the title stays readable whatever the picture is.
-  function adaptBackgroundText(spec) {
-    var bgimg = elementById(spec, "bgimg"), ov = elementById(spec, "overlay");
-    if (!bgimg || !bgimg._img || !ov) return;
-    var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), t2 = elementById(spec, "t2"), bar = elementById(spec, "bar");
-    var W = spec.width, H = spec.height, s = 8;
-    var c = makeCanvas(W / s, H / s), g = c.getContext("2d");
-    drawCover(g, bgimg._img, c.width, c.height);
-    var top = t1 ? t1.y : 0;
-    var bottom = t2 ? t2.y + t2.h : (bar ? bar.y + bar.h : H);
-    var left = t1 ? t1.x : 0, right = t1 ? t1.x + t1.w : W;
-    var x0 = Math.max(0, Math.floor(left / s)), x1 = Math.min(c.width, Math.ceil(right / s));
-    var y0 = Math.max(0, Math.floor(top / s)), y1 = Math.min(c.height, Math.ceil(bottom / s));
-    if (x1 <= x0 || y1 <= y0) return;
-    var d = g.getImageData(x0, y0, x1 - x0, y1 - y0).data, sum = 0, cnt = d.length / 4;
-    for (var i = 0; i < d.length; i += 4) sum += (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
-    var L = sum / cnt;
-    ov.opacity = Math.max(0.28, Math.min(0.6, 0.2 + 0.55 * L));
-    [t1, t2].forEach(function (t) { if (t) t.text_color = "#ffffff"; });
-    if (t1s) t1s.text_color = "#000000";
-    if (bar && hexLum(bar.color) < 0.35) bar.color = "#ffffff";
-  }
+def on_click(orig, pts, mode, evt: gr.SelectData):
+    if orig is None:
+        return None, pts
+    small = fit(orig, MAX_DIM)
+    x, y = evt.index[0], evt.index[1]
+    pts = pts + [(int(x), int(y), 1 if mode == GREEN else 0)]
+    return draw_points(small, pts), pts
 
-  // Text group layout (works for every canvas size). The title may take 1, 2 or 3 lines (the browser decides),
-  // so its REAL height is measured here. The group (title, accent bar, subtitle) keeps the gap and the centre
-  // that the Worker chose, and is re-spaced with the measured heights.
-  function textHeight(e) {
-    return renderText(e).canvas.height - textPad(e) * 2;
-  }
-  function flowTextGroup(spec) {
-    var t1 = elementById(spec, "t1"), t1s = elementById(spec, "t1s"), bar = elementById(spec, "bar"), t2 = elementById(spec, "t2");
-    if (!t1 || !bar) return;
-    var barH = bar.h || 12;
-    var gap = Math.max(10, Math.round(bar.y - (t1.y + t1.h)));
-    var h1 = textHeight(t1), h2 = t2 ? textHeight(t2) : 0;
-    var oldTop = t1.y, oldBottom = t2 ? t2.y + t2.h : bar.y + barH;
-    var center = (oldTop + oldBottom) / 2;
-    var total = h1 + gap + barH + (t2 ? gap + h2 : 0);
-    var y = Math.round(center - total / 2);
-    y = Math.min(y, spec.height - 30 - total);
-    y = Math.max(30, y);
-    t1.y = y;
-    if (t1s) t1s.y = y + 5;
-    bar.y = y + h1 + gap;
-    if (t2) t2.y = bar.y + barH + gap;
-  }
 
-  // --------------------------------------------------------------------- PSD
-  function specToPsd(spec) {
-    currentSpec = spec;
-    adaptBackgroundText(spec);
-    spec._tone = sceneTone(spec);
-    // A cut-out element whose background could not be removed would show as a coloured box: drop it (and its shadows).
-    var dropIds = {};
-    spec.elements.forEach(function (e) {
-      if (e.kind === "image" && e.cutout && e._img) { renderImage(e); if (!e._cut) dropIds[e.id] = true; }
-    });
-    spec._dropped = Object.keys(dropIds).length;
-    if (spec._dropped) {
-      spec.elements = spec.elements.filter(function (e) {
-        return !dropIds[e.id] && !dropIds[String(e.id).replace(/^(gs_|sh_)/, "")];
-      });
-    }
-    flowTextGroup(spec);
-    var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
-      var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
-      if (e.center) r.x = Math.round((spec.width - c.width) / 2) + (e.dx || 0);
-      var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
-      var op = typeof e.opacity === "number" ? Math.max(0, Math.min(1, e.opacity)) : 1;
-      if (op < 1) { for (var i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * op); }
-      return { name: e.name || e.id || "Layer", left: Math.round(r.x), top: Math.round(r.y), width: c.width, height: c.height, rgba: data };
-    });
-    return PSD.buildPsd(spec.width, spec.height, layers);
-  }
+def on_clear(orig):
+    if orig is None:
+        return None, []
+    return fit(orig, MAX_DIM), []
 
-  // ---------------------------------------------------------------- daily cap
-  function usage() {
-    try {
-      var d = JSON.parse(localStorage.getItem("layerai_usage") || "{}"), today = new Date().toISOString().slice(0, 10);
-      return d.day === today ? d : { day: today, n: 0 };
-    } catch (_) { return { day: "", n: 0 }; }
-  }
-  function bumpUsage() {
-    try { var u = usage(); u.n++; localStorage.setItem("layerai_usage", JSON.stringify(u)); } catch (_) {}
-  }
 
-  // ---------------------------------------------------------------------- UI
-  // Elements of index.html: prompt, format, style, image, go, msg, dl.
-  var $ = function (id) { return document.getElementById(id); };
-  var promptEl = $("prompt"), formatEl = $("format"), styleEl = $("style"), fileInput = $("image");
-  var goBtn = $("go"), msgEl = $("msg"), dlEl = $("dl"), blobUrl = null;
+# ---------------------------------------------------------------- detection
+def owl_detect(img, pthr, lthr, othr):
+    w, h = img.size
+    inputs = owl_proc(text=[QUERIES], images=img, return_tensors="pt")
+    with torch.no_grad():
+        out = owl(**inputs)
 
-  function status(text, type) {
-    msgEl.textContent = text;
-    msgEl.className = type || "";
-  }
+    probs = torch.sigmoid(out.logits[0])
+    scores, labels = probs.max(dim=-1)
+    pred = out.pred_boxes[0]
 
-  goBtn.addEventListener("click", async function () {
-    if (goBtn.disabled) return;
-    var prompt = promptEl.value.trim();
-    var file = fileInput && fileInput.files && fileInput.files[0];
-    var format = formatEl.value || "thumbnail";
-    currentLook = styleEl.value || "";
-    if (!prompt && !file) { status("اكتب برومت أو اختر صورة (أو الاثنين).", "err"); return; }
-    if (usage().n >= DAILY_LIMIT) { status("وصلت الحد اليومي المجاني (" + DAILY_LIMIT + "). عاود غداً.", "err"); return; }
-    goBtn.disabled = true; dlEl.replaceChildren(); status("جاري التوليد...");
-    try {
-      var spec = await plan(prompt, file, format, currentLook);
-      if (spec.limited) { status(spec.message, "err"); return; }
-      status("جاري توليد الصورة...");
-      var imgs = await addImages(spec, function (i, total) {
-        status("جاري توليد الصورة " + i + "/" + total + "...");
-      });
-      if (document.fonts && document.fonts.ready) await document.fonts.ready;
-      var bytes = specToPsd(spec);
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      blobUrl = URL.createObjectURL(new Blob([bytes], { type: "image/vnd.adobe.photoshop" }));
-      bumpUsage();
-      var a = document.createElement("a");
-      a.className = "dl"; a.href = blobUrl; a.download = "design.psd";
-      a.textContent = "تحميل design.psd (" + spec.elements.length + " طبقات، " + spec.width + "×" + spec.height + ")";
-      dlEl.replaceChildren(a);
+    S = max(h, w)  # الصورة تُحشى إلى مربع
+    cx, cy, bw, bh = pred.unbind(-1)
+    boxes = torch.stack(
+        [
+            (cx - bw / 2) * S,
+            (cy - bh / 2) * S,
+            (cx + bw / 2) * S,
+            (cy + bh / 2) * S,
+        ],
+        dim=-1,
+    )
 
-      var notes = [], warn = false;
-      if (spec.fallback) {
-        warn = true;
-        notes.push("الذكاء الاصطناعي غير متاح دابا، فاستعملنا تصميماً تجريبياً." + (spec.reason ? " (" + spec.reason + ")" : ""));
-      } else if (imgs.limitMsg) {
-        warn = true;
-        notes.push(imgs.limitMsg + " (وضعنا مربعاً مؤقتاً مكان الصورة.)");
-      } else if (imgs.failed) {
-        warn = true;
-        notes.push("تعذر توليد الصورة، فوضعنا مربعاً مؤقتاً مكانها." + (imgs.reason ? " (" + imgs.reason + ")" : ""));
-      }
-      if (spec._dropped) notes.push("حذفنا " + spec._dropped + " عنصراً تعذر قص خلفيته.");
-      if (file) notes.push("الصورة المرجعية ما كتتحللش بعد.");
+    keep = scores > 0.1
+    boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+    if len(boxes) == 0:
+        return [], [], []
 
-      status((warn ? "" : "نجح إنشاء التصميم. ") + notes.join(" "), warn ? "err" : "ok");
-    } catch (err) {
-      status("وقع خطأ: " + err.message, "err");
-    } finally { goBtn.disabled = false; }
-  });
-})();
+    kinds = KIND[labels]
+    keep = batched_nms(boxes, scores, kinds, 0.4)
+    boxes = boxes[keep].cpu().numpy()
+    scores = scores[keep].cpu().numpy()
+    kinds = kinds[keep].cpu().numpy()
+
+    persons, logos, objs = [], [], []
+    for b, s, k in zip(boxes, scores, kinds):
+        b = [
+            max(float(b[0]), 0),
+            max(float(b[1]), 0),
+            min(float(b[2]), w - 1),
+            min(float(b[3]), h - 1),
+        ]
+        if b[2] - b[0] < 8 or b[3] - b[1] < 8:
+            continue
+        if k == 0 and s >= pthr:
+            persons.append((b, float(s)))
+        elif k == 1 and s >= lthr:
+            logos.append((b, float(s)))
+        elif k == 2 and s >= othr:
+            objs.append((b, float(s)))
+
+    for lst in (persons, logos, objs):
+        lst.sort(key=lambda t: -t[1])
+    return persons, logos, objs
+
+
+def sam_box(box, h, w):
+    b = np.array(box, dtype=np.float32)
+    ms, scores, _ = predictor.predict(box=b, multimask_output=True)
+    ba = (b[2] - b[0]) * (b[3] - b[1])
+    best, best_r = None, -1.0
+    for m, s in zip(ms, scores):
+        a = int(m.sum())
+        if a < 40 or a > 0.9 * h * w or a > 1.15 * ba:
+            continue
+        # v10: القناع الجيد يملأ الصندوق (لا رأسًا فقط من شخص كامل)
+        ys, xs = np.where(m)
+        fill = box_iou([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1], b)
+        r = 0.6 * fill + 0.4 * float(s)
+        if r > best_r:
+            best, best_r = m.astype(bool), r
+    return best
+
+
+def subject_from_points(pts):
+    coords = np.array([[x, y] for x, y, _ in pts], dtype=np.float32)
+    labels = np.array([l for _, _, l in pts], dtype=np.int32)
+    multi = len(pts) == 1
+    ms, scores, _ = predictor.predict(
+        point_coords=coords, point_labels=labels, multimask_output=multi
+    )
+    m = ms[int(scores.argmax())] if multi else ms[0]
+    return m.astype(bool)
+
+
+def subject_fallback(small):
+    m = remove(small, session=session, only_mask=True)
+    return np.array(m.convert("L")) > 127
+
+
+def element_at_point(arr, x, y, text_masks):
+    """v39: نفضّل القناع بحجم عنصر عادي (حتى POINT_MAX_AREA من الصورة) كي لا تبتلع
+    النقطة الجيران (نص كبير، لائحة...). وإلا نأخذ أصغر قناع متاح."""
+    h, w = arr.shape[:2]
+    for tm in text_masks:
+        d = cv2.dilate(tm.astype(np.uint8), kernel(15))
+        if d[y, x]:
+            return tm
+    ms, scores, _ = predictor.predict(
+        point_coords=np.array([[x, y]], dtype=np.float32),
+        point_labels=np.array([1], dtype=np.int32),
+        multimask_output=True,
+    )
+    cands = [(int(m.sum()), float(s), m) for m, s in zip(ms, scores) if int(m.sum()) >= 100]
+    pool = [c for c in cands if c[0] <= POINT_MAX_AREA * h * w]
+    if not pool:
+        pool = sorted(cands, key=lambda c: c[0])[:1]
+    return max(pool, key=lambda c: c[1])[2] if pool else None
+
+
+def drop_crowd_boxes(boxes, h, w):
+    """v23: صندوق "شخص" يغطي شريط جمهور أو مجموعة (عريض جدًا، أو يحوي 3 صناديق أخرى
+    على الأقل) ليس شخصًا واحدًا. نتجاهله عند اختيار العنصر الرئيسي إن وُجد غيره."""
+    keep = []
+    for b in boxes:
+        bw, bh = b[2] - b[0], b[3] - b[1]
+        wide = bw > 0.6 * w and bh < 0.6 * bw
+        inside = sum(
+            1 for o in boxes
+            if o is not b and b[0] <= (o[0] + o[2]) / 2 <= b[2] and b[1] <= (o[1] + o[3]) / 2 <= b[3]
+        )
+        if not (wide or inside >= 3):
+            keep.append(b)
+    return keep if keep else list(boxes)
+
+
+def pick_subject(pts, persons, objs, small, h, w, allow_rembg=True):
+    """يرجع (قناع، مصدر، صناديق، أشخاص إضافيون). المسارات: نقاط ← أشخاص ← جسم ← rembg."""
+    if any(p[2] == 1 for p in pts):
+        return subject_from_points(pts), "نقاطك", [], []
+    found = []
+    cand = [b for b, _ in persons[:MAX_PERSONS + 4]]
+    cand = drop_crowd_boxes(cand, h, w)
+    for b in cand:
+        if (b[2] - b[0]) * (b[3] - b[1]) < 0.004 * h * w:
+            continue
+        m = safe(sam_box, None, b, h, w)
+        if m is not None:
+            # v23: في الصور الجماعية قد يعيد SAM قناع المدرجات/الحشد (عرضه كامل الصورة) لصندوق
+            # شخص؛ لا يصلح أن يكون شخصًا ولا عنصرًا رئيسيًا
+            if len(cand) >= 3:
+                xs_ = np.where(m.any(axis=0))[0]
+                if len(xs_) and (xs_[-1] - xs_[0] + 1) > 0.6 * w:
+                    continue
+                # v26: قطع الجمهور في أعلى الصورة: قناع داكن (إضاءة متوسطة < 70) ينتهي
+                # في النصف العلوي. قياسات الصورة الجماعية: الجمهور 30-34 وينتهي عند 0.38-0.40 من
+                # الارتفاع، واللاعبون 140 فأكثر وينتهون عند 0.9 فأكثر
+                ys_ = np.where(m.any(axis=1))[0]
+                a_ = np.asarray(small)
+                if len(ys_) and a_.ndim == 3 and a_.shape[:2] == m.shape:
+                    lum_ = float((0.299 * a_[..., 0] + 0.587 * a_[..., 1] + 0.114 * a_[..., 2])[m].mean())
+                    if (ys_[-1] + 1) / float(h) < 0.55 and lum_ < 70:
+                        continue
+            found.append((int(m.sum()), m, b))
+    found.sort(key=lambda t: -t[0])
+    found = found[:MAX_PERSONS]
+    if found:
+        # الأكبر = العنصر الرئيسي، والباقون طبقات مستقلة
+        return found[0][1], "شخص", [t[2] for t in found], [t[1] for t in found[1:]]
+    for b, _ in objs[:1]:
+        m = safe(sam_box, None, b, h, w)
+        if m is not None:
+            return m, "جسم", [b], []
+    fb = safe(subject_fallback, None, small) if allow_rembg else None
+    # v14: قناع rembg الذي يغطي أكثر من 45% غالبًا تصميم كامل لا عنصر رئيسي
+    if fb is not None and 0.01 <= fb.mean() <= 0.45:
+        return fb, "rembg", [], []
+    return np.zeros((h, w), bool), "لا شيء", [], []
+
+
+# ---------------------------------------------------------------- pipeline
+def process(orig, pts, auto, pthr, lthr, othr, keep_mode, use_lama, proc_mode=MODE_AUTO,
+            bg_pol=BG_AUTO, bg_algo=ALGO_NEW, desc="", cthr=0.15):
+    if orig is None:
+        return None, None, "ارفع صورة أولًا."
+
+    ERRORS.clear()
+    pts = pts or []
+
+    small = fit(orig, MAX_DIM)
+    arr = np.array(small)
+    h, w = arr.shape[:2]
+    full = np.array(orig.convert("RGB"))
+    H, W = full.shape[:2]
+
+    def up(m):
+        if (H, W) == (h, w):
+            return m.astype(bool)
+        r = cv2.resize(m.astype(np.uint8) * 255, (W, H), interpolation=cv2.INTER_LINEAR)
+        return r > 127
+
+    # إن كتب المستخدم وصفًا نستخرج ما طلبه فقط (بلا كشف تلقائي)
+    qs_all = parse_desc(desc)
+    custom = len(qs_all) > 0
+    qs = [q for q in qs_all if q not in TEXT_WORDS]
+    wants_text = len(qs) != len(qs_all)
+
+    _t0 = time.time()
+    predictor.set_image(arr)
+
+    persons, logos, objs = [], [], []
+    if auto and not custom:
+        persons, logos, objs = safe(owl_detect, ([], [], []), small, pthr, lthr, othr)
+
+    if custom and not any(p[2] == 1 for p in pts):
+        subj, src, used_boxes, extras = np.zeros((h, w), bool), "وصف", [], []
+    else:
+        subj, src, used_boxes, extras = pick_subject(
+            pts, persons, objs, small, h, w,
+            allow_rembg=(proc_mode not in (MODE_DESIGN, MODE_ALL)),
+        )
+    no_subject = subj.sum() == 0
+    # v12: قناع rembg يغطي المحتوى كله في التصاميم، فلا نتجاهل النصوص داخله
+    ref = subj if (subj.mean() < 0.6 and src != "rembg") else np.zeros_like(subj)
+
+    _t1 = time.time()
+    if custom:
+        run_text = auto and wants_text
+    else:
+        run_text = auto and proc_mode != MODE_PHOTO
+    texts = safe(detect_text, [], arr, ref) if run_text else []
+    _t2 = time.time()
+    text_masks = [t[0] for t in texts]
+
+    elems, names, union = [], [], np.zeros((h, w), bool)
+
+    def add(m, name):
+        nonlocal union
+        if m is None or len(elems) >= MAX_OBJECTS:
+            return None
+        m = m.astype(bool)
+        if m.sum() < 40 or overlap_frac(m, union) > 0.5:
+            return None
+        elems.append(m & ~union)
+        names.append(name)
+        union |= m
+        return elems[-1]
+
+    # العناصر التي وصفها المستخدم (OWLv2 يحدد الصندوق وSAM يقص القناع).
+    # تُعالج قبل النقاط اليدوية، كي لا يبتلع قناع نقطة كبير ما وجده الوصف.
+    CUSTOM_DBG.clear()
+    custom_found = {}
+    if qs:
+        for b, sc, lbl in safe(owl_custom, [], small, qs, cthr):
+            sm = safe(sam_box, None, b, h, w)
+            how = "صندوق"
+            if sm is None:
+                # احتياط: نقطة في وسط الصندوق (بقناع بحجم عنصر عادي)
+                sm = safe(element_at_point, None, arr,
+                          int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2), [])
+                how = "نقطة" if sm is not None else "فشل"
+            ok = add(sm, f"{lbl} {sc:.2f}") is not None
+            if ok:
+                custom_found[lbl] = custom_found.get(lbl, 0) + 1
+            CUSTOM_DBG.append(
+                f"[{lbl[:16]} {sc:.2f} صندوق={int(b[0])},{int(b[1])},{int(b[2])},{int(b[3])}"
+                f" SAM={how} {'أُضيف' if ok else 'رُفض'}]"
+            )
+
+    for x, y, lab in pts:
+        if lab == 0:
+            add(safe(element_at_point, None, arr, x, y, text_masks), "عنصر يدوي")
+
+    for i, pm in enumerate(extras, start=2):
+        add(pm, f"شخص {i}")
+
+    if src in ("شخص", "جسم"):
+        for b, _ in objs[:4]:
+            if any(box_iou(b, pb) > 0.3 for pb in used_boxes):
+                continue
+            add(safe(sam_box, None, b, h, w), "جسم")
+
+    # v11: الشعارات قبل النصوص (كي لا تُقرأ أيقونة كنص) + تشديد فلترة الشعارات (مساحة معقولة، ليست نصًا، قناع ممتلئ)
+    text_union = np.zeros((h, w), bool)
+    for tm in text_masks:
+        text_union |= tm
+    text_zone = cv2.dilate(text_union.astype(np.uint8), kernel(max(9, w // 80))).astype(bool)
+
+    logos_added = 0
+    for b, sc in logos[:MAX_LOGOS]:
+        x0, y0, x1, y1 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
+        area = (x1 - x0) * (y1 - y0)
+        if area > 0.08 * h * w or area < 0.0003 * h * w:
+            continue
+        if any(box_iou(b, pb) > 0.5 for pb in used_boxes):
+            continue
+        if sc < 0.25 and text_zone[y0:y1, x0:x1].mean() > 0.4:
+            continue
+        lm = safe(sam_box, None, b, h, w)
+        if lm is None or lm.sum() < 0.2 * area:
+            continue
+        if add(lm, f"شعار {sc:.2f}") is not None:
+            logos_added += 1
+
+    flat = []  # نصوص على خلفية موحدة اللون: تُملأ بلون الخلفية بدل LaMa
+    text_grown = np.zeros((h, w), bool)
+    flat_grown = np.zeros((h, w), bool)
+    for tm, txt, col in texts:
+        got = add(tm, "نص: " + txt if txt else "نص")
+        if got is not None:
+            g_ = grow_text(got)
+            if col is not None:
+                flat.append((got, col))
+                flat_grown |= g_
+            else:
+                text_grown |= g_
+
+    # وضع "قص كل العناصر": قطع SAM التلقائية تُضاف بعد النصوص والشعارات (كي لا تتداخل معها)
+    auto_added = 0
+    _ta0 = time.time()
+    if proc_mode == MODE_ALL and not custom:
+        for am in safe(sam_all_masks, [], arr, h, w):
+            if len(elems) >= MAX_OBJECTS or auto_added >= ALL_MAX:
+                break
+            if subj.sum() > 0 and overlap_frac(am, subj) > 0.5:
+                continue  # داخل العنصر الرئيسي: لا نقطّعه لأجزاء
+            if add(am, f"عنصر {auto_added + 1}") is not None:
+                auto_added += 1
+    _ta1 = time.time()
+
+    keep_under = keep_mode != CUT
+    main_mask = safe(build_main, subj, subj, elems, keep_under)
+
+    flat_union = np.zeros((h, w), bool)
+    for fm, _ in flat:
+        flat_union |= fm
+    # v27: في الصور الجماعية يترك الترميم تلطيخًا وأشباحًا؛ فنُبقي الأشخاص في الخلفية الأصلية
+    # (هم موجودون أيضًا كطبقات مستقلة) إلا إن اختار المستخدم الترميم دائمًا
+    person_u = np.zeros((h, w), bool)
+    for m_, nm_ in zip(elems, names):
+        if nm_.startswith(("شخص", "جسم")):
+            person_u |= m_
+    person_u |= main_mask
+    n_people = len(extras) + (1 if src == "شخص" else 0)
+    keep_orig = (bg_pol == BG_KEEP) or (
+        bg_pol == BG_AUTO and n_people >= 3 and float(person_u.mean()) > 0.12
+    )
+    rm_mask = (main_mask | union | text_grown) & ~flat_grown & ~flat_union
+    if keep_orig:
+        rm_mask = rm_mask & ~person_u
+    _t3 = time.time()
+    bg = fill_background(full, up(rm_mask), bool(use_lama), new=(bg_algo != ALGO_OLD)).copy()
+    _t4 = time.time()
+    for fm, col in flat:
+        d = cv2.dilate(up(grow_text(fm)).astype(np.uint8), kernel(5)).astype(bool)
+        bg[d] = col
+
+    psd = PSDImage.new("RGB", (W, H))
+    add_layer(psd, Image.fromarray(full).convert("RGBA"), "الصورة الأصلية (مخفية)", visible=False)
+    add_layer(psd, Image.fromarray(bg).convert("RGBA"), "الخلفية")
+
+    main_preview = None
+    reset_matte()
+    if main_mask.sum() > 0:
+        res = (refine_layer if REFINE_EDGES else soft_layer)(full, up(main_mask))
+        if res is not None:
+            img, x, y = res
+            add_layer(psd, img, "العنصر الرئيسي", left=x, top=y)
+            main_preview = img
+
+    count = 0
+    for m, nm in zip(elems, names):
+        # حواف ناعمة للأشخاص والأجسام فقط؛ النصوص والشعارات تبقى بحوافها الحادة
+        fn = refine_layer if (REFINE_EDGES and nm.startswith(("شخص", "جسم"))) else soft_layer
+        res = fn(full, up(m))
+        if res is None:
+            continue
+        img, x, y = res
+        count += 1
+        add_layer(psd, img, f"{count}. {nm}", left=x, top=y)
+        if main_preview is None:
+            main_preview = img
+
+    path = os.path.join(tempfile.mkdtemp(), "output.psd")
+    psd.save(path)
+
+    msg = f"تم: مصدر الرئيسي = {src} | أشخاص مفصولون = {len(extras) + (src == 'شخص')} | عناصر = {count}"
+    if no_subject:
+        msg += " (لا عنصر رئيسي: خلفية + عناصر فقط)"
+    if custom:
+        got_ = ", ".join(f"{k}×{v}" for k, v in custom_found.items()) or "لا شيء"
+        miss_ = [q for q in qs if q not in custom_found]
+        msg += f" | طلبك (مترجم): {', '.join(qs_all)} | وُجد: {got_}"
+        if wants_text:
+            msg += f" | نصوص={len(texts)}"
+        if miss_:
+            msg += f" | لم يُعثر على: {', '.join(miss_)} (جرّب وصفًا أوضح، أو خفّض حساسية الوصف، أو انقر على العنصر بنقطة حمراء)"
+        if CUSTOM_DBG:
+            msg += " | تشخيص الوصف: " + " ; ".join(CUSTOM_DBG)
+    else:
+        msg += (
+            f" [v41 | أشخاص={len(persons)} | أجسام={len(objs)}"
+            f" | شعارات={logos_added}/{len(logos)} | نصوص={len(texts)}]"
+        )
+    msg += f" | زمن(ث): قص={_t1-_t0:.0f} نص={_t2-_t1:.0f} خلفية={_t4-_t3:.0f}"
+    if proc_mode == MODE_ALL and not custom:
+        msg += f" | عناصر تلقائية={auto_added} (زمن={_ta1-_ta0:.0f}ث)"
+    if _MATTE_ERR[0]:
+        msg += " | خطأ تنعيم: " + _MATTE_ERR[0]
+    if BG_INFO:
+        msg += " | ترميم: " + " ; ".join(BG_INFO[:8])
+    if keep_orig:
+        msg += " | خلفية: أُبقي الأصل (إزالة الأشخاص كبيرة)"
+    if TEXT_DROPS and auto and run_text:
+        msg += " | تشخيص النص: " + " ; ".join(TEXT_DROPS[:9])
+    if logos:
+        msg += " | درجات الشعارات: " + ",".join(f"{s:.2f}" for _, s in logos[:8])
+    if ERRORS:
+        msg += " | أخطاء: " + " ; ".join(ERRORS[:3])
+    return path, main_preview, msg
+
+
+# ---------------------------------------------------------------- UI
+with gr.Blocks(title="Image to PSD") as demo:
+    gr.Markdown(
+        "# تحويل الصورة إلى طبقات منفصلة\n"
+        "ارفع صورتك، **واكتب ما تريد استخراجه كطبقات** (أو اتركه فارغًا للتفكيك التلقائي)، "
+        "ثم اضغط «استخراج الطبقات».\n\n"
+        "⚠️ **اقتراح طبقات وليس فصلًا مثاليًا:** قد تبقى بقايا في الخلفية."
+    )
+
+    orig_state = gr.State(None)
+    pts_state = gr.State([])
+    auto_state = gr.State(True)
+
+    inp = gr.Image(type="pil", label="الصورة", sources=["upload", "clipboard"])
+    desc = gr.Textbox(
+        label="ماذا تريد أن أستخرج كطبقات؟ (افصل بفاصلة)",
+        placeholder="مثال: أيقونة Ps, مجلد zip أصفر, زر التحميل, النصوص   —   أو بالإنجليزية: a Photoshop Ps app icon, a yellow folder with a zipper, a yellow rounded button with a download arrow, text",
+        lines=2,
+    )
+    run_btn = gr.Button("استخراج الطبقات", variant="primary")
+    proc_mode = gr.Radio(
+        [MODE_AUTO, MODE_DESIGN, MODE_PHOTO, MODE_ALL],
+        value=MODE_AUTO,
+        label="وضع المعالجة (عند ترك الوصف فارغًا فقط)",
+    )
+    bg_pol = gr.Radio(
+        [BG_AUTO, BG_FILL, BG_KEEP],
+        value=BG_AUTO,
+        label="طريقة الخلفية (بعد فصل الأشخاص)",
+    )
+    status = gr.Textbox(label="الحالة", interactive=False)
+    out_file = gr.File(label="ملف PSD الناتج")
+    out_main = gr.Image(label="معاينة العنصر الرئيسي / أول طبقة", type="pil")
+
+    with gr.Accordion("تصحيح (اختياري)", open=False):
+        gr.Markdown(
+            "اضبط الحساسية أو انقر على الصورة لوضع نقاط "
+            "(اختر «عنصر منفصل (أحمر)» ثم انقر على العنصر الذي فاته الوصف)، "
+            "ثم اضغط «استخراج الطبقات»."
+        )
+        cthr = gr.Slider(0.05, 0.6, value=0.15, step=0.01, label="حساسية الوصف (أقل = يلتقط أكثر)")
+        pthr = gr.Slider(0.10, 0.8, value=0.10, step=0.05, label="حساسية الأشخاص (أقل = يلتقط أكثر)")
+        othr = gr.Slider(0.10, 0.8, value=0.10, step=0.05, label="حساسية الأجسام/المنتجات")
+        lthr = gr.Slider(0.05, 0.8, value=0.25, step=0.05, label="حساسية الشعارات")
+        keep_mode = gr.Radio([KEEP, CUT], value=KEEP, label="معالجة ما تحت الشعارات والنصوص")
+        use_lama = gr.Checkbox(value=True, label="تنظيف الخلفية بـ LaMa (أبطأ وأجمل)")
+        bg_algo = gr.Radio([ALGO_NEW, ALGO_OLD], value=ALGO_NEW, label="خوارزمية ترميم الخلفية (للمقارنة)")
+        annotated = gr.Image(type="pil", label="انقر لوضع نقاط", interactive=False)
+        mode = gr.Radio([GREEN, RED], value=GREEN, label="نوع النقطة")
+        clear_btn = gr.Button("مسح النقاط")
+
+    ctrl = [orig_state, pts_state, auto_state, pthr, lthr, othr, keep_mode, use_lama,
+            proc_mode, bg_pol, bg_algo, desc, cthr]
+    outs = [out_file, out_main, status]
+
+    # الرفع يحفظ الصورة فقط؛ المعالجة بالزر (أو Enter في حقل الوصف) لتوفير وقت CPU
+    inp.upload(on_upload, inp, [orig_state, annotated, pts_state])
+    inp.clear(
+        lambda: (None, None, [], None, None, ""),
+        None,
+        [orig_state, annotated, pts_state, out_file, out_main, status],
+    )
+    annotated.select(on_click, [orig_state, pts_state, mode], [annotated, pts_state])
+    clear_btn.click(on_clear, orig_state, [annotated, pts_state])
+    run_btn.click(process, ctrl, outs)
+    desc.submit(process, ctrl, outs)
+
+
+if __name__ == "__main__":
+    demo.queue().launch()
