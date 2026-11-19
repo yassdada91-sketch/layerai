@@ -277,7 +277,7 @@
 
     if (chroma) {
       var keyGreen = bg > br + 40 && bg > bb + 40;     // green screen
-      var keyMagenta = br > bg + 40 && bb > bg + 40;   // magenta screen (used for green plants)
+      var keyMagenta = br > bg + 40 && bb > bg + 40;   // magenta screen (used for green plants and black / dark products)
 
       if (keyGreen) {
         // Step 1: remove green CONNECTED to the transparent background (green reflections, glow under the object).
@@ -300,6 +300,32 @@
         for (var nb = 0; nb < n; nb++) if (d[nb * 4 + 3] >= 40) nonBg++;      // everything that is not (almost) transparent yet, also half-transparent leftovers
         if (nonBg - rc >= n * 0.03) {   // something clearly remains after the removal (a small object on a big leftover green area is fine)
           for (var q = 0; q < rc; q++) { d[removed[q] * 4 + 3] = 0; alpha[removed[q]] = 0; }
+        }
+      }
+
+      if (keyMagenta) {
+        // Step 1 (magenta): remove light pink haze / glow CONNECTED to the transparent background (the generator leaves a
+        // lighter pink cloud around the object that is too far from pure magenta to be keyed out). Dark burgundy reflections
+        // inside a black object are not "pinkish" by these rules, so they are not reached. If the removal would eat more than
+        // 35% of what is left, it is undone (a pink object).
+        var mgSeen = new Uint8Array(n), mgSt = new Int32Array(n), mgSp = 0, mgRem = new Int32Array(n), mgRc = 0;
+        for (var mgI = 0; mgI < n; mgI++) if (d[mgI * 4 + 3] < 40) { mgSeen[mgI] = 1; mgSt[mgSp++] = mgI; }
+        var mgPink = function (ix) {
+          var o8 = ix * 4, r8 = d[o8], g8 = d[o8 + 1], b8 = d[o8 + 2], lo8 = Math.min(r8, b8), m8 = lo8 - g8;
+          return (m8 > 20 && lo8 > 150) || (m8 > 45 && lo8 > 90) || m8 > 90;
+        };
+        var mgSpread = function (ix) {
+          if (!mgSeen[ix] && d[ix * 4 + 3] >= 40 && mgPink(ix)) { mgSeen[ix] = 1; mgRem[mgRc++] = ix; mgSt[mgSp++] = ix; }
+        };
+        while (mgSp > 0) {
+          var mgCur = mgSt[--mgSp], mgX = mgCur % W, mgY = (mgCur - mgX) / W;
+          if (mgX > 0) mgSpread(mgCur - 1); if (mgX < W - 1) mgSpread(mgCur + 1);
+          if (mgY > 0) mgSpread(mgCur - W); if (mgY < H - 1) mgSpread(mgCur + W);
+        }
+        var mgNb = 0;
+        for (var mgK = 0; mgK < n; mgK++) if (d[mgK * 4 + 3] >= 40) mgNb++;
+        if (mgNb - mgRc >= n * 0.03 && mgRc < mgNb * 0.35) {
+          for (var mgQ = 0; mgQ < mgRc; mgQ++) { d[mgRem[mgQ] * 4 + 3] = 0; alpha[mgRem[mgQ]] = 0; }
         }
       }
 
@@ -360,6 +386,8 @@
         // Step 3 (magenta): gentle pink-spill removal over the WHOLE object. A white or light object shot on a magenta
         // screen picks up a pink tint. Light pixels (green above 110) with a SMALL red/blue excess (up to 60) lose most of it.
         // Strongly coloured pixels (real pink or purple parts) and green leaves are left alone.
+        // Dark pixels (a black bag, a dark cup) that picked up a burgundy / purple reflection (red AND blue both above green)
+        // are pulled back toward neutral dark.
         for (var m2 = 0; m2 < n; m2++) {
           var o4 = m2 * 4;
           if (d[o4 + 3] === 0) continue;
@@ -367,6 +395,9 @@
           if (ex4 > 0 && ex4 <= 110 && gg4 > 120) {
             d[o4] = Math.round(Math.max(gg4, d[o4] - ex4 * 0.9));
             d[o4 + 2] = Math.round(Math.max(gg4, d[o4 + 2] - ex4 * 0.9));
+          } else if (ex4 > 0 && gg4 <= 120 && Math.max(d[o4], d[o4 + 2]) < 150) {
+            d[o4] = Math.round(gg4 + (d[o4] - gg4) * 0.25);
+            d[o4 + 2] = Math.round(gg4 + (d[o4 + 2] - gg4) * 0.25);
           }
         }
         // Step 4 (magenta): leftover pure-magenta pixels inside the object (gaps between leaves) become transparent.
