@@ -1,415 +1,578 @@
 <!DOCTYPE html><html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>مولد PSD بالذكاء الاصطناعي – أنشئ تصميمك بطبقات قابلة للتعديل | PSDai</title><meta name="description" content="أنشئ تصميمك بالذكاء الاصطناعي من وصف نصي أو صورة مرجعية، ثم حمّل ملف PSD بطبقات منفصلة قابلة للتعديل في فوتوشوب. جرّب مولد PSDai مجاناً."><meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"><meta name="author" content="PSDai"><link rel="canonical" href="https://psdai.cyou/tool2/">
-<link rel="alternate" hreflang="ar" href="https://psdai.cyou/tool2/">
-<link rel="alternate" hreflang="x-default" href="https://psdai.cyou/tool2/">
-<meta property="og:type" content="website">
-<meta property="og:locale" content="ar_AR">
-<meta property="og:title" content="مولد PSD بالذكاء الاصطناعي | PSDai">
-<meta property="og:description" content="حوّل وصفك أو صورتك المرجعية إلى تصميم بطبقات قابلة للتعديل وحمّله بصيغة PSD.">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>AI Layered PSD Generator – إنشاء تصاميم بطبقات | PSDai</title><meta name="description" content="أنشئ تصاميم احترافية بالذكاء الاصطناعي انطلاقاً من وصف نصي أو صورة مرجعية، وحمّل ملفات PSD متعددة الطبقات قابلة للتعديل مع PSDai."><meta name="keywords" content="AI PSD Generator, Layered PSD, AI Design Generator, Create PSD Online, تصميم بالذكاء الاصطناعي, إنشاء PSD بطبقات"><meta name="robots" content="index, follow"><link rel="canonical" href="https://psdai.cyou/tool2/"><meta property="og:type" content="website">
+<meta property="og:title" content="AI Layered PSD Generator | PSDai">
+<meta property="og:description" content="حوّل أفكارك وصورك المرجعية إلى تصاميم متعددة الطبقات قابلة للتعديل بصيغة PSD.">
 <meta property="og:url" content="https://psdai.cyou/tool2/">
-<meta property="og:site_name" content="PSDai">
-<meta property="og:image" content="https://psdai.cyou/og-tool2.jpg">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="مولد PSD بالذكاء الاصطناعي من PSDai">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="مولد PSD بالذكاء الاصطناعي | PSDai">
-<meta name="twitter:description" content="أنشئ تصاميم بالذكاء الاصطناعي وحمّلها بصيغة PSD متعددة الطبقات.">
-<meta name="twitter:image" content="https://psdai.cyou/og-tool2.jpg"><meta name="theme-color" content="#0c0a38"><link rel="preconnect" href="https://fonts.googleapis.com">
+<meta property="og:site_name" content="PSDai"><meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="AI Layered PSD Generator | PSDai">
+<meta name="twitter:description" content="أنشئ تصاميم بالذكاء الاصطناعي وحمّلها بصيغة PSD متعددة الطبقات."><link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>
 :root {
-    --navy: #0c0a38;
     --primary: #7546ed;
     --secondary: #3978ed;
     --dark: #171b35;
     --text: #252943;
     --muted: #68708a;
-    --border: #e4defa;
-    --page: #f9f8ff;
-    --soft: #f1ecff;
-    --gradient: linear-gradient(110deg, #7a3df0, #3978ed);
-    --shadow: 0 14px 40px rgba(88, 60, 200, 0.12);
+    --border: #e9eaf2;
+    --light: #f6f7fc;
+    --white: #ffffff;
+    --gradient: linear-gradient(110deg, #7546ed, #3978ed);
+    --shadow: 0 12px 35px rgba(36, 43, 85, 0.07);
 }
 
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+* {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
 
 body {
     margin: 0;
     font-family: 'Tajawal', Tahoma, Arial, sans-serif;
-    background: linear-gradient(180deg, var(--page), #f3f0ff);
+    background: #ffffff;
     color: var(--text);
     line-height: 1.8;
 }
 
-a { text-decoration: none; color: inherit; }
-.container { width: min(1100px, 92%); margin: auto; }
+a {
+    text-decoration: none;
+    color: inherit;
+}
+
+.container {
+    width: min(1100px, 92%);
+    margin: auto;
+}
 
 /* HEADER */
+
 .site-header {
-    background: linear-gradient(90deg, #0b0a33, #14115a);
-    border-bottom: 1px solid rgba(255, 255, 255, .08);
+    background: #ffffff;
+    border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 100;
 }
-.header-inner { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.logo { display: flex; align-items: center; gap: 10px; color: #ffffff; white-space: nowrap; }
-.logo svg { width: 38px; height: 38px; flex: none; }
-.logo b { display: block; font-size: 26px; font-weight: 800; letter-spacing: -.5px; line-height: 1.05; }
-.logo b span { color: #8fb0ff; }
-.logo small { display: block; font-size: 10px; color: #b9b4ee; line-height: 1.3; }
 
-.nav-links { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
-.nav-links::-webkit-scrollbar { display: none; }
+.header-inner {
+    min-height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.logo {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--primary);
+    letter-spacing: -1px;
+}
+
+.logo span {
+    color: var(--secondary);
+}
+
+.nav-links {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex-wrap: wrap;
+}
+
 .nav-links a {
-    font-size: 15px; font-weight: 600; color: #dcd9ff;
-    padding: 7px 14px; border-radius: 30px; white-space: nowrap; transition: .2s;
-}
-.nav-links a:hover { background: rgba(255, 255, 255, .09); color: #ffffff; }
-.nav-links a.active { background: linear-gradient(110deg, #8b3dff, #6a35ee); color: #ffffff; }
-.header-cta {
-    background: linear-gradient(110deg, #8b3dff, #6a35ee); color: #ffffff;
-    font-weight: 800; font-size: 14px; padding: 9px 20px; border-radius: 30px; white-space: nowrap;
-    box-shadow: 0 6px 20px rgba(139, 61, 255, .45);
+    font-size: 15px;
+    font-weight: 600;
+    color: #414760;
+    transition: .2s;
 }
 
-/* BREADCRUMB (inside hero) */
-.breadcrumb { padding: 14px 0 0; font-size: 13px; color: #b9b4ee; position: relative; z-index: 2; }
-.breadcrumb ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.breadcrumb li + li::before { content: "‹"; margin-inline-end: 6px; opacity: .6; }
-.breadcrumb a:hover { color: #ffffff; }
+.nav-links a:hover {
+    color: var(--primary);
+}
 
 /* HERO */
-.hero-wrap {
-    position: relative;
-    overflow: hidden;
-    background:
-        radial-gradient(ellipse 55% 80% at 12% 100%, rgba(57, 120, 237, .55), transparent 65%),
-        radial-gradient(ellipse 50% 75% at 85% 0, rgba(139, 61, 255, .5), transparent 65%),
-        linear-gradient(120deg, #0c0a38 0%, #2a1280 55%, #3a1bcf 100%);
+
+.hero {
+    background: #ffffff;
+    padding: 55px 0 35px;
 }
-.hero-wrap::after {
-    content: ""; position: absolute; left: -10%; right: -10%; bottom: -1px; height: 70px;
-    background: var(--page); border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+
+.hero-content {
+    max-width: 850px;
+    margin: auto;
+    text-align: center;
 }
-.hero { padding: 30px 0 120px; position: relative; z-index: 1; }
-.hero-content { max-width: 850px; margin: auto; text-align: center; }
 
 .eyebrow {
-    display: inline-block; color: #d9c8ff; background: rgba(255, 255, 255, .1);
-    border: 1px solid rgba(255, 255, 255, .18); padding: 7px 17px; border-radius: 30px;
-    font-size: 13px; font-weight: 800; letter-spacing: .5px; margin-bottom: 14px;
+    display: inline-block;
+    color: var(--primary);
+    background: #f1edff;
+    padding: 7px 17px;
+    border-radius: 30px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: .5px;
+    margin-bottom: 14px;
 }
-.hero h1 { font-size: clamp(28px, 5vw, 46px); line-height: 1.35; margin: 8px 0 15px; color: #ffffff; font-weight: 800; }
-.hero h1 span {
-    display: block;
-    background: linear-gradient(90deg, #c09bff, #86a9ff);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
+
+.hero h1 {
+    font-size: clamp(28px, 5vw, 43px);
+    line-height: 1.35;
+    margin: 8px 0 15px;
+    color: var(--dark);
+    font-weight: 800;
 }
-.hero-description { max-width: 720px; margin: auto; color: #d7d3ff; font-size: 18px; }
-.hero-buttons { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; margin-top: 26px; }
-.btn-primary, .btn-outline { padding: 12px 28px; border-radius: 16px; font-weight: 800; font-size: 16px; transition: .2s; }
-.btn-primary { background: linear-gradient(110deg, #8b3dff, #3978ed); color: #ffffff; box-shadow: 0 8px 28px rgba(110, 90, 255, .55); }
-.btn-outline { border: 2px solid rgba(255, 255, 255, .85); color: #ffffff; }
-.btn-primary:hover, .btn-outline:hover { transform: translateY(-2px); }
+
+.hero-description {
+    max-width: 720px;
+    margin: auto;
+    color: var(--muted);
+    font-size: 18px;
+}
 
 /* GENERATOR */
-.generator-section { margin-top: -80px; padding: 0 0 55px; position: relative; z-index: 2; }
-.generator-card {
-    max-width: 800px; margin: auto; padding: 30px; background: #ffffff;
-    border: 1px solid var(--border); border-radius: 22px; box-shadow: var(--shadow);
+
+.generator-section {
+    padding: 20px 0 65px;
 }
-.generator-card h2 { font-size: 23px; margin: 0 0 20px; color: var(--dark); }
-.field-label { display: block; font-size: 16px; font-weight: 700; margin: 15px 0 8px; color: var(--text); }
+
+.generator-card {
+    max-width: 800px;
+    margin: auto;
+    padding: 30px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
+}
+
+.generator-card h2 {
+    font-size: 23px;
+    margin: 0 0 20px;
+    color: var(--dark);
+}
+
+.field-label {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    margin: 15px 0 8px;
+    color: var(--text);
+}
 
 textarea {
-    display: block; width: 100%; min-height: 125px; resize: vertical;
-    border: 1px solid #dcd6f5; border-radius: 14px; padding: 15px;
-    font-family: inherit; font-size: 16px; outline: none; background: #ffffff; color: var(--text); transition: .2s;
+    display: block;
+    width: 100%;
+    min-height: 125px;
+    resize: vertical;
+    border: 1px solid #dedfee;
+    border-radius: 13px;
+    padding: 15px;
+    font-family: inherit;
+    font-size: 16px;
+    outline: none;
+    background: #ffffff;
+    color: var(--text);
+    transition: .2s;
 }
-textarea:focus, select:focus, input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(117, 70, 237, .13); }
-textarea::placeholder { color: #9a9eb0; }
 
-.settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
-select, input[type="file"] {
-    width: 100%; min-width: 0; border: 1px solid #dcd6f5; border-radius: 12px; padding: 12px;
-    font-family: inherit; font-size: 15px; background: #ffffff; color: var(--text); outline: none;
+textarea:focus,
+select:focus,
+input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(117, 70, 237, .09);
 }
-input[type="file"] { margin-top: 5px; }
-input[type="file"]::file-selector-button {
-    background: var(--soft); color: var(--primary); border: 0; border-radius: 8px;
-    padding: 6px 14px; margin-inline-end: 12px; font-family: inherit; font-weight: 700; cursor: pointer;
+
+textarea::placeholder {
+    color: #9a9eb0;
+}
+
+.settings-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 12px;
+}
+
+select,
+input[type="file"] {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid #dedfee;
+    border-radius: 11px;
+    padding: 12px;
+    font-family: inherit;
+    font-size: 15px;
+    background: #ffffff;
+    color: var(--text);
+    outline: none;
+}
+
+input[type="file"] {
+    margin-top: 5px;
 }
 
 .generate-button {
-    width: 100%; border: 0; border-radius: 15px; padding: 15px 20px; margin-top: 22px;
-    background: var(--gradient); color: #ffffff; font-family: inherit; font-size: 19px; font-weight: 800;
-    cursor: pointer; transition: .2s; box-shadow: 0 10px 26px rgba(117, 70, 237, .35);
+    width: 100%;
+    border: 0;
+    border-radius: 13px;
+    padding: 15px 20px;
+    margin-top: 22px;
+    background: var(--gradient);
+    color: #ffffff;
+    font-family: inherit;
+    font-size: 19px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: .2s;
 }
-.generate-button:hover { filter: brightness(1.07); transform: translateY(-1px); }
-.generate-button:disabled { opacity: .6; cursor: wait; }
 
-#msg { margin-top: 15px; min-height: 24px; text-align: center; font-size: 15px; color: var(--muted); }
-#msg.err { color: #e5484d; }
-#msg.ok { color: #159b60; }
-a.dl { display: block; text-align: center; margin-top: 15px; padding: 13px; background: var(--gradient); color: #ffffff; border-radius: 12px; font-weight: 800; }
-.generator-note { display: block; margin-top: 16px; color: var(--muted); font-size: 13px; text-align: center; }
-.noscript-note { background: var(--soft); border-radius: 12px; padding: 12px; margin: 12px 0; text-align: center; color: var(--muted); }
+.generate-button:hover {
+    opacity: .93;
+    transform: translateY(-1px);
+}
 
-/* SECTIONS */
-.content-section { padding: 50px 0; }
-.section-heading { text-align: center; max-width: 780px; margin: 0 auto 32px; }
+.generate-button:disabled {
+    opacity: .6;
+    cursor: wait;
+}
+
+#msg {
+    margin-top: 15px;
+    min-height: 24px;
+    text-align: center;
+    font-size: 15px;
+    color: var(--muted);
+}
+
+#msg.err {
+    color: #e5484d;
+}
+
+#msg.ok {
+    color: #159b60;
+}
+
+a.dl {
+    display: block;
+    text-align: center;
+    margin-top: 15px;
+    padding: 13px;
+    background: var(--gradient);
+    color: #ffffff;
+    border-radius: 11px;
+    font-weight: 800;
+}
+
+.generator-note {
+    display: block;
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+/* GENERAL SECTIONS */
+
+.content-section {
+    padding: 65px 0;
+    background: #ffffff;
+}
+
+.section-heading {
+    text-align: center;
+    max-width: 750px;
+    margin: 0 auto 35px;
+}
+
 .section-heading h2 {
-    display: flex; align-items: center; justify-content: center; gap: 16px;
-    font-size: 28px; color: var(--dark); margin: 0 0 10px; font-weight: 800;
+    font-size: 29px;
+    color: var(--dark);
+    margin: 0 0 10px;
+    font-weight: 800;
 }
-.section-heading h2::before, .section-heading h2::after {
-    content: ""; flex: 1; max-width: 90px; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--primary));
-}
-.section-heading h2::before { background: linear-gradient(270deg, transparent, var(--primary)); }
-.section-heading p { color: var(--muted); margin: 0; font-size: 17px; }
 
-.features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.feature-card, .step-card {
-    background: linear-gradient(135deg, #ffffff, #f1ecff);
-    border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: var(--shadow);
+.section-heading p {
+    color: var(--muted);
+    margin: 0;
+    font-size: 17px;
 }
+
+.features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+}
+
+.feature-card {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 17px;
+    padding: 25px;
+    box-shadow: var(--shadow);
+}
+
 .feature-icon {
-    width: 54px; height: 54px; display: flex; align-items: center; justify-content: center;
-    border-radius: 16px; background: #ffffff; border: 1px solid var(--border);
-    font-size: 26px; margin-bottom: 14px; box-shadow: 0 6px 16px rgba(117, 70, 237, .12);
+    width: 52px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 15px;
+    background: #f1edff;
+    color: var(--primary);
+    font-size: 25px;
+    margin-bottom: 15px;
 }
-.feature-card h3 { color: var(--dark); font-size: 19px; margin: 0 0 8px; }
-.feature-card p { color: var(--muted); font-size: 15px; margin: 0; }
 
-/* TRUST STRIP */
-.trust-strip {
-    display: grid; grid-template-columns: repeat(4, 1fr);
-    background: #ffffff; border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
+.feature-card h3 {
+    color: var(--dark);
+    font-size: 19px;
+    margin: 0 0 8px;
 }
-.trust-item { display: flex; align-items: center; gap: 12px; padding: 18px 20px; }
-.trust-item + .trust-item { border-inline-start: 1px solid var(--border); }
-.trust-item i { font-style: normal; font-size: 32px; line-height: 1; }
-.trust-item strong { display: block; color: var(--dark); font-size: 16px; line-height: 1.3; }
-.trust-item span { color: var(--muted); font-size: 13px; }
 
-/* STEPS */
-.steps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
-.step-card { position: relative; text-align: center; padding: 30px 18px 24px; }
+.feature-card p {
+    color: var(--muted);
+    font-size: 15px;
+    margin: 0;
+}
+
+/* HOW IT WORKS */
+
+.steps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+}
+
+.step-card {
+    text-align: center;
+    padding: 25px 18px;
+    border-radius: 17px;
+    background: var(--light);
+    border: 1px solid var(--border);
+}
+
 .step-number {
-    position: absolute; top: -14px; inset-inline-start: 18px;
-    width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
-    border-radius: 50%; background: linear-gradient(135deg, #8b3dff, #5b4cf0);
-    color: #ffffff; font-size: 18px; font-weight: 800; box-shadow: 0 6px 16px rgba(117, 70, 237, .45);
+    width: 45px;
+    height: 45px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 13px;
+    border-radius: 50%;
+    background: var(--gradient);
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: 800;
 }
-.step-card h3 { color: var(--dark); margin: 0 0 8px; font-size: 19px; }
-.step-card p { color: var(--muted); margin: 0; font-size: 15px; }
 
-/* INFO + FAQ */
-.info-box { background: #ffffff; border: 1px solid var(--border); border-radius: 18px; padding: 26px; margin-top: 18px; box-shadow: var(--shadow); }
-.info-box h3 { color: var(--dark); font-size: 21px; margin: 0 0 10px; }
-.info-box p { color: var(--muted); margin: 0; font-size: 16px; }
-.faq-list { max-width: 850px; margin: auto; }
-.faq-item { border: 1px solid var(--border); border-radius: 14px; margin-bottom: 12px; padding: 18px 20px; background: #ffffff; }
-.faq-item h3 { color: var(--dark); font-size: 17px; margin: 0 0 7px; }
-.faq-item p { color: var(--muted); margin: 0; font-size: 15px; }
-
-/* CTA BANNER */
-.cta-section { padding: 20px 0 60px; }
-.cta-banner {
-    display: flex; align-items: center; justify-content: space-between; gap: 22px;
-    padding: 26px 34px; border-radius: 24px; color: #ffffff;
-    background: linear-gradient(110deg, #8b2df0 0%, #5a45f0 55%, #3978ed 100%);
-    box-shadow: 0 16px 44px rgba(90, 69, 240, .4);
+.step-card h3 {
+    color: var(--dark);
+    margin: 0 0 8px;
+    font-size: 19px;
 }
-.cta-trophy { font-size: 58px; line-height: 1; }
-.cta-text { flex: 1; }
-.cta-text h2 { margin: 0; font-size: 26px; font-weight: 800; }
-.cta-text p { margin: 4px 0 0; color: #e6e1ff; font-size: 15px; }
-.cta-button { background: #ffffff; color: #4a2fd0; font-weight: 800; padding: 12px 30px; border-radius: 30px; white-space: nowrap; }
+
+.step-card p {
+    color: var(--muted);
+    margin: 0;
+    font-size: 15px;
+}
+
+/* PSD INFORMATION */
+
+.info-box {
+    background: #f7f8fc;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 28px;
+    margin-top: 20px;
+}
+
+.info-box h3 {
+    color: var(--dark);
+    font-size: 21px;
+    margin: 0 0 10px;
+}
+
+.info-box p {
+    color: var(--muted);
+    margin: 0;
+    font-size: 16px;
+}
+
+/* FAQ */
+
+.faq-list {
+    max-width: 850px;
+    margin: auto;
+}
+
+.faq-item {
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    margin-bottom: 12px;
+    padding: 18px 20px;
+    background: #ffffff;
+}
+
+.faq-item h3 {
+    color: var(--dark);
+    font-size: 17px;
+    margin: 0 0 7px;
+}
+
+.faq-item p {
+    color: var(--muted);
+    margin: 0;
+    font-size: 15px;
+}
 
 /* FOOTER */
-.site-footer { background: linear-gradient(90deg, #0b0a33, #14115a); padding: 35px 0 20px; }
-.footer-inner { text-align: center; }
-.footer-logo { display: inline-block; font-size: 26px; font-weight: 800; color: #ffffff; margin-bottom: 8px; }
-.footer-links { display: flex; justify-content: center; flex-wrap: wrap; gap: 20px; margin: 15px 0; }
-.footer-links a { color: #cfcaff; font-size: 14px; font-weight: 600; }
-.footer-links a:hover { color: #ffffff; }
-.copyright { color: #9d98d6; font-size: 13px; margin-top: 20px; }
+
+.site-footer {
+    background: #f5f6fb;
+    border-top: 1px solid var(--border);
+    padding: 35px 0 20px;
+}
+
+.footer-inner {
+    text-align: center;
+}
+
+.footer-logo {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--primary);
+    margin-bottom: 12px;
+}
+
+.footer-links {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin: 15px 0;
+}
+
+.footer-links a {
+    color: #535a72;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.footer-links a:hover {
+    color: var(--primary);
+}
+
+.copyright {
+    color: #858ba0;
+    font-size: 13px;
+    margin-top: 20px;
+}
 
 /* MOBILE */
-@media (max-width: 760px) {
-    .header-inner { flex-wrap: wrap; padding: 10px 0; gap: 8px; }
-    .nav-links { order: 3; width: 100%; }
-    .nav-links a { font-size: 13px; padding: 6px 12px; }
-    .hero { padding: 20px 0 110px; }
-    .hero-description { font-size: 16px; }
-    .generator-card { padding: 20px 15px; }
-    .settings-row, .features-grid, .steps-grid { grid-template-columns: 1fr; }
-    .trust-strip { grid-template-columns: 1fr 1fr; }
-    .trust-item + .trust-item { border-inline-start: 0; }
-    .trust-item:nth-child(n+3) { border-top: 1px solid var(--border); }
-    .trust-item:nth-child(even) { border-inline-start: 1px solid var(--border); }
-    .content-section { padding: 38px 0; }
-    .section-heading h2 { font-size: 23px; }
-    .cta-banner { flex-direction: column; text-align: center; padding: 24px 18px; }
-    .cta-text h2 { font-size: 21px; }
-    .footer-links { gap: 12px; }
+
+@media (max-width: 700px) {
+    .header-inner {
+        flex-direction: column;
+        justify-content: center;
+        padding: 12px 0;
+        gap: 8px;
+    }
+
+    .nav-links {
+        justify-content: center;
+        gap: 12px;
+    }
+
+    .nav-links a {
+        font-size: 13px;
+    }
+
+    .hero {
+        padding-top: 35px;
+    }
+
+    .hero-description {
+        font-size: 16px;
+    }
+
+    .generator-card {
+        padding: 20px 15px;
+    }
+
+    .settings-row {
+        grid-template-columns: 1fr;
+    }
+
+    .features-grid,
+    .steps-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .content-section {
+        padding: 45px 0;
+    }
+
+    .section-heading h2 {
+        font-size: 25px;
+    }
+
+    .footer-links {
+        gap: 12px;
+    }
 }
 </style><script type="application/ld+json">
 {
- "@context": "https://schema.org",
- "@graph": [
-  {
-   "@type": "Organization",
-   "@id": "https://psdai.cyou/#org",
-   "name": "PSDai",
-   "url": "https://psdai.cyou/",
-   "logo": "https://psdai.cyou/logo.png"
-  },
-  {
-   "@type": "WebSite",
-   "@id": "https://psdai.cyou/#website",
-   "url": "https://psdai.cyou/",
-   "name": "PSDai",
-   "inLanguage": "ar",
-   "publisher": {
-    "@id": "https://psdai.cyou/#org"
-   }
-  },
-  {
-   "@type": "WebPage",
-   "@id": "https://psdai.cyou/tool2/#webpage",
-   "url": "https://psdai.cyou/tool2/",
-   "name": "مولد PSD بالذكاء الاصطناعي",
-   "isPartOf": {
-    "@id": "https://psdai.cyou/#website"
-   },
-   "inLanguage": "ar",
-   "about": {
-    "@id": "https://psdai.cyou/tool2/#app"
-   }
-  },
-  {
-   "@type": "WebApplication",
-   "@id": "https://psdai.cyou/tool2/#app",
-   "name": "PSDai AI Layered PSD Generator",
-   "alternateName": "مولد PSD بالذكاء الاصطناعي",
-   "url": "https://psdai.cyou/tool2/",
-   "applicationCategory": "DesignApplication",
-   "operatingSystem": "Web",
-   "browserRequirements": "Requires JavaScript",
-   "description": "أنشئ تصاميم بالذكاء الاصطناعي من وصف نصي أو صورة مرجعية وصدّرها كملفات PSD متعددة الطبقات.",
-   "inLanguage": "ar",
-   "offers": {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "PSDai AI Layered PSD Generator",
+  "url": "https://psdai.cyou/tool2/",
+  "applicationCategory": "DesignApplication",
+  "operatingSystem": "Web",
+  "description": "Create AI-powered designs from text prompts or reference images and export them as layered PSD files.",
+  "inLanguage": "ar",
+  "offers": {
     "@type": "Offer",
     "price": "0",
     "priceCurrency": "USD"
-   },
-   "publisher": {
-    "@id": "https://psdai.cyou/#org"
-   }
-  },
-  {
-   "@type": "BreadcrumbList",
-   "itemListElement": [
-    {
-     "@type": "ListItem",
-     "position": 1,
-     "name": "الرئيسية",
-     "item": "https://psdai.cyou/"
-    },
-    {
-     "@type": "ListItem",
-     "position": 2,
-     "name": "مولد PSD بالذكاء الاصطناعي",
-     "item": "https://psdai.cyou/tool2/"
-    }
-   ]
-  },
-  {
-   "@type": "FAQPage",
-   "mainEntity": [
-    {
-     "@type": "Question",
-     "name": "ما هي أداة AI Layered PSD Generator؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "هي أداة تساعدك على إنشاء تصاميم باستخدام الذكاء الاصطناعي انطلاقاً من وصف نصي أو صورة مرجعية، مع إمكانية تصدير النتيجة بصيغة PSD."
-     }
-    },
-    {
-     "@type": "Question",
-     "name": "هل يمكن إنشاء تصميم دون رفع صورة؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "نعم، يمكنك كتابة وصف التصميم فقط واستخدامه لإنشاء تصميم جديد."
-     }
-    },
-    {
-     "@type": "Question",
-     "name": "هل يمكن استعمال صورة مرجعية؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "نعم، يمكنك رفع صورة مرجعية بمفردها أو استخدامها مع وصف نصي لتوجيه عملية إنشاء التصميم."
-     }
-    },
-    {
-     "@type": "Question",
-     "name": "ما المقاسات المتاحة للتصميم؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "تتوفر مقاسات للصورة المصغرة والتصميم المربع والتصميم العمودي والقصص والبانرات."
-     }
-    },
-    {
-     "@type": "Question",
-     "name": "ما هو ملف PSD؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "PSD هو تنسيق ملفات التصميم المستخدم في Adobe Photoshop، ويسمح بحفظ الطبقات وعناصر التصميم القابلة للتحرير."
-     }
-    },
-    {
-     "@type": "Question",
-     "name": "هل يمكن تعديل ملف PSD بعد تحميله؟",
-     "acceptedAnswer": {
-      "@type": "Answer",
-      "text": "نعم، يمكن فتح ملف PSD في Photoshop والبرامج المتوافقة، والعمل على الطبقات والعناصر المحفوظة داخله."
-     }
-    }
-   ]
   }
- ]
 }
 </script></head><body><header class="site-header">
-<div class="container header-inner">
-<a class="logo" href="https://psdai.cyou/" aria-label="PSDai الصفحة الرئيسية"><svg viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b58cff"/><stop offset="1" stop-color="#4f8cff"/></linearGradient></defs><path d="M24 4 44 14 24 24 4 14Z" fill="url(#lg)"/><path d="M4 22 24 32 44 22" fill="none" stroke="url(#lg)" stroke-width="4" stroke-linejoin="round"/><path d="M4 31 24 41 44 31" fill="none" stroke="url(#lg)" stroke-width="4" stroke-linejoin="round" opacity=".7"/></svg><span><b>PSD<span>ai</span></b><small>Design Beyond Limits</small></span></a>
-<nav class="nav-links" aria-label="القائمة الرئيسية">
-<a href="https://psdai.cyou/">الرئيسية</a>
-<a class="active" href="#generator">إنشاء تصميم</a>
-<a href="#features">المميزات</a>
-<a href="#how-it-works">طريقة الاستخدام</a>
-<a href="#faq">الأسئلة الشائعة</a>
-<a href="https://psdai.cyou/articles.html">المقالات</a>
-<a href="https://psdai.cyou/contact.html">اتصل بنا</a>
-</nav>
-<a class="header-cta" href="#generator">ابدأ مجاناً</a>
+    <div class="container header-inner">    <a class="logo" href="https://psdai.cyou/" aria-label="PSDai الصفحة الرئيسية">
+        PSD<span>ai</span>
+    </a>
+
+    <nav class="nav-links" aria-label="القائمة الرئيسية">
+        <a href="https://psdai.cyou/">الرئيسية</a>
+        <a href="#generator">إنشاء تصميم</a>
+        <a href="#features">المميزات</a>
+        <a href="#how-it-works">طريقة الاستخدام</a>
+        <a href="#faq">الأسئلة الشائعة</a>
+    </nav>
+
 </div>
-</header><main><div class="hero-wrap">
-<nav class="breadcrumb container" aria-label="مسار التصفح"><ol><li><a href="https://psdai.cyou/">الرئيسية</a></li><li aria-current="page">مولد PSD بالذكاء الاصطناعي</li></ol></nav>
-<section class="hero"><div class="container hero-content">
-<span class="eyebrow">AI POWERED DESIGN GENERATOR</span>
-<h1>مولد PSD بالذكاء الاصطناعي: <span>أنشئ تصاميم احترافية بطبقات قابلة للتعديل</span></h1>
-<p class="hero-description">حوّل أفكارك أو صورك المرجعية إلى تصاميم متعددة الطبقات، واختر المقاس والأسلوب المناسب ثم حمّل تصميمك بصيغة PSD قابلة للتعديل.</p>
-<div class="hero-buttons"><a class="btn-primary" href="#generator">ابدأ الآن مجاناً 🚀</a><a class="btn-outline" href="#how-it-works">▶ كيف تعمل الأداة</a></div>
-</div></section>
-</div><section class="generator-section" id="generator">
+
+</header><main><section class="hero">
+    <div class="container hero-content">    <span class="eyebrow">AI POWERED DESIGN GENERATOR</span>
+
+    <h1>أنشئ تصاميم احترافية باستخدام الذكاء الاصطناعي</h1>
+
+    <p class="hero-description">
+        حوّل أفكارك أو صورك المرجعية إلى تصاميم متعددة الطبقات،
+        واختر المقاس والأسلوب المناسب ثم حمّل تصميمك بصيغة PSD قابلة للتعديل.
+    </p>
+
+</div>
+
+</section><section class="generator-section" id="generator">
     <div class="container">    <div class="generator-card">
 
         <h2>ابدأ بإنشاء تصميمك</h2>
@@ -468,7 +631,6 @@ a.dl { display: block; text-align: center; margin-top: 15px; padding: 13px; back
         </button>
 
         <div id="msg" aria-live="polite"></div>
-        <noscript><p class="noscript-note">تحتاج هذه الأداة إلى تفعيل JavaScript في المتصفح لإنشاء التصميم.</p></noscript>
 
         <div id="dl"></div>
 
@@ -525,12 +687,7 @@ a.dl { display: block; text-align: center; margin-top: 15px; padding: 13px; back
 
 </div>
 
-</section><section class="content-section" aria-label="مزايا PSDai"><div class="container"><div class="trust-strip">
-<div class="trust-item"><i>⭐</i><div><strong>أدوات مبتكرة</strong><span>ومميزة</span></div></div>
-<div class="trust-item"><i>🛡️</i><div><strong>جودة احترافية</strong><span>وتفاصيل دقيقة</span></div></div>
-<div class="trust-item"><i>⚡</i><div><strong>سرعة عالية</strong><span>ومجانية</span></div></div>
-<div class="trust-item"><i>🎧</i><div><strong>دعم فني</strong><span>عبر صفحة اتصل بنا</span></div></div>
-</div></div></section><section class="content-section" id="how-it-works">
+</section><section class="content-section" id="how-it-works">
     <div class="container">    <div class="section-heading">
         <h2>كيف تستخدم PSDai؟</h2>
         <p>أنشئ تصميمك في خطوات بسيطة.</p>
@@ -658,11 +815,7 @@ a.dl { display: block; text-align: center; margin-top: 15px; padding: 13px; back
 
 </div>
 
-</section><section class="cta-section"><div class="container"><div class="cta-banner">
-<div class="cta-trophy" aria-hidden="true">🏆</div>
-<div class="cta-text"><h2>وجهتك الأولى للتصميم الذكي بالذكاء الاصطناعي!</h2><p>اكتشف، أنشئ، حمّل... وحقق إبداعك بلا حدود.</p></div>
-<a class="cta-button" href="#generator">ابدأ الآن ←</a>
-</div></div></section></main><footer class="site-footer">
+</section></main><footer class="site-footer">
     <div class="container footer-inner">    <a href="https://psdai.cyou/" class="footer-logo">
         PSDai
     </a>
@@ -671,7 +824,6 @@ a.dl { display: block; text-align: center; margin-top: 15px; padding: 13px; back
         <a href="https://psdai.cyou/">الرئيسية</a>
         <a href="https://psdai.cyou/articles.html">المقالات</a>
         <a href="https://psdai.cyou/#tools">الأدوات</a>
-        <a href="https://psdai.cyou/tool2/">مولد PSD بالذكاء الاصطناعي</a>
         <a href="https://psdai.cyou/privacy.html">سياسة الخصوصية</a>
         <a href="https://psdai.cyou/terms.html">شروط الاستخدام</a>
         <a href="https://psdai.cyou/contact.html">اتصل بنا</a>
