@@ -1,5 +1,7 @@
 /* Minimal PSD writer (RGB, 8-bit, raw pixel layers, unicode layer names).
- * Layers: [{name, left, top, width, height, rgba: Uint8ClampedArray (non-premultiplied)}]  bottom -> top
+ * Layers: [{name, left, top, width, height, rgba: Uint8ClampedArray (non-premultiplied), text?}]  bottom -> top
+ * Optional layer.text makes it a REAL editable text layer (Photoshop "TySh" block) that also keeps its pixels:
+ *   text: { lines:[string], size:px, bold:bool, color:"#rrggbb", align:"left"|"center"|"right", x:anchor x, y:baseline y, leading:px, width:px }
  * No dependencies; works in browsers and Node.
  */
 (function (root) {
@@ -14,6 +16,9 @@
     this.bytes(Uint8Array.of((v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255));
   };
   Writer.prototype.i32 = function (v) { this.u32(v < 0 ? v + 4294967296 : v); };
+  Writer.prototype.f64 = function (v) {
+    var b = new ArrayBuffer(8); new DataView(b).setFloat64(0, v, false); this.bytes(new Uint8Array(b));
+  };
   Writer.prototype.ascii = function (s) {
     var a = new Uint8Array(s.length);
     for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 127;
@@ -54,6 +59,166 @@
     return w.toUint8Array();
   }
 
+  // ------------------------------------------------------------------ editable text layer (TySh)
+  // Photoshop "descriptor" helpers
+  function dKey(w, k) { if (k.length === 4) { w.u32(0); w.ascii(k); } else { w.u32(k.length); w.ascii(k); } }
+  function dUni(w, s) { w.u32(s.length + 1); for (var i = 0; i < s.length; i++) w.u16(s.charCodeAt(i)); w.u16(0); }
+  // items: [[key, osType, writerFn]]
+  function dDescr(w, cls, items) {
+    w.u32(0);                // descriptor name (empty unicode string)
+    dKey(w, cls);
+    w.u32(items.length);
+    items.forEach(function (it) { dKey(w, it[0]); w.ascii(it[1]); it[2](w); });
+  }
+  function vText(s) { return function (w) { dUni(w, s); }; }
+  function vLong(n) { return function (w) { w.i32(n); }; }
+  function vDoub(n) { return function (w) { w.f64(n); }; }
+  function vUnit(n) { return function (w) { w.ascii("#Pxl"); w.f64(n); }; }
+  function vEnum(a, b) { return function (w) { dKey(w, a); dKey(w, b); }; }
+  function vObjc(cls, items) { return function (w) { dDescr(w, cls, items); }; }
+  function vRaw(u8) { return function (w) { w.u32(u8.length); w.bytes(u8); }; }
+
+  // EngineData: PDF-like text. Serializes a JS value (object / array / string / number / boolean) to bytes.
+  function engineBytes(root) {
+    var out = [];
+    function p(s) { for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 255); }
+    function str(s) {
+      out.push(0x28, 0xFE, 0xFF);
+      for (var i = 0; i < s.length; i++) {
+        var c = s.charCodeAt(i), hi = (c >> 8) & 255, lo = c & 255;
+        [hi, lo].forEach(function (b) { if (b === 0x28 || b === 0x29 || b === 0x5C) out.push(0x5C); out.push(b); });
+      }
+      out.push(0x29);
+    }
+    function num(n) { return Number.isInteger(n) ? String(n) : String(Math.round(n * 10000) / 10000); }
+    function val(v, ind) {
+      if (typeof v === "string") str(v);
+      else if (typeof v === "boolean") p(v ? "true" : "false");
+      else if (typeof v === "number") p(num(v));
+      else if (Array.isArray(v)) {
+        var complex = v.some(function (x) { return x && typeof x === "object"; });
+        if (!complex) { p("["); v.forEach(function (x) { p(" "); val(x, ind); }); p(" ]"); }
+        else {
+          p("[\n");
+          v.forEach(function (x) { p(ind + "\t"); val(x, ind + "\t"); p("\n"); });
+          p(ind + "]");
+        }
+      } else {
+        p("<<\n");
+        Object.keys(v).forEach(function (k) {
+          var x = v[k];
+          p(ind + "\t/" + k);
+          if (x && typeof x === "object" && !Array.isArray(x)) { p("\n" + ind + "\t"); val(x, ind + "\t"); }
+          else { p(" "); val(x, ind + "\t"); }
+          p("\n");
+        });
+        p(ind + ">>");
+      }
+    }
+    p("\n\n"); val(root, "");
+    return Uint8Array.from(out);
+  }
+
+  function hexRgb(h) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(h || ""));
+    if (!m) return [0, 0, 0];
+    var n = parseInt(m[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+
+  function textEngine(T) {
+    var lines = T.lines && T.lines.length ? T.lines : [""], size = T.size || 48;
+    var text = lines.join("\r") + "\r";
+    var just = T.align === "right" ? 1 : (T.align === "center" ? 2 : 0);
+    var rgb = hexRgb(T.color), font = T.bold ? "Arial-BoldMT" : "ArialMT";
+    var leading = T.leading || size * 1.2;
+    var styleData = {
+      Font: 0, FontSize: size, FauxBold: false, FauxItalic: false, AutoLeading: false, Leading: leading,
+      HorizontalScale: 1, VerticalScale: 1, Tracking: 0, AutoKerning: true, Kerning: 0, BaselineShift: 0,
+      FontCaps: 0, FontBaseline: 0, Underline: false, Strikethrough: false, Ligatures: true, DLigatures: false,
+      BaselineDirection: 2, Tsume: 0, StyleRunAlignment: 2, Language: 0, NoBreak: false,
+      FillColor: { Type: 1, Values: [1, rgb[0], rgb[1], rgb[2]] },
+      StrokeColor: { Type: 1, Values: [1, 0, 0, 0] }, FillFlag: true, StrokeFlag: false, FillFirst: true,
+      YUnderline: 1, OutlineWidth: 1, CharacterDirection: 0, HindiNumbers: false, Kashida: 1, DiacriticPos: 2
+    };
+    var paraProps = {
+      Justification: just, FirstLineIndent: 0, StartIndent: 0, EndIndent: 0, SpaceBefore: 0, SpaceAfter: 0,
+      AutoHyphenate: false, HyphenatedWordSize: 6, PreHyphen: 2, PostHyphen: 2, ConsecutiveHyphens: 8, Zone: 36,
+      WordSpacing: [0.8, 1, 1.33], LetterSpacing: [0, 0, 0], GlyphSpacing: [1, 1, 1], AutoLeading: 1.2,
+      LeadingType: 0, Hanging: false, Burasagari: false, KinsokuOrder: 0, EveryLineComposer: false
+    };
+    var paraRuns = [], paraLens = [];
+    lines.forEach(function (l) {
+      paraRuns.push({ ParagraphSheet: { DefaultStyleSheet: 0, Properties: paraProps }, Adjustments: { Axis: [1, 0, 1], XY: [0, 0] } });
+      paraLens.push(l.length + 1);
+    });
+    var resources = {
+      KinsokuSet: [], MojiKumiSet: [],
+      TheNormalStyleSheet: 0, TheNormalParagraphSheet: 0,
+      ParagraphSheetSet: [{ Name: "Normal RGB", DefaultStyleSheet: 0, Properties: paraProps }],
+      StyleSheetSet: [{ Name: "Normal RGB", StyleSheetData: styleData }],
+      FontSet: [{ Name: font, Script: 0, FontType: 1, Synthetic: 0 }],
+      SuperscriptSize: 0.583, SuperscriptPosition: 0.333, SubscriptSize: 0.583, SubscriptPosition: 0.333, SmallCapSize: 0.7
+    };
+    return engineBytes({
+      EngineDict: {
+        Editor: { Text: text },
+        ParagraphRun: {
+          DefaultRunData: { ParagraphSheet: { DefaultStyleSheet: 0, Properties: {} }, Adjustments: { Axis: [1, 0, 1], XY: [0, 0] } },
+          RunArray: paraRuns, RunLengthArray: paraLens, IsJoinable: 1
+        },
+        StyleRun: {
+          DefaultRunData: { StyleSheet: { StyleSheetData: {} } },
+          RunArray: [{ StyleSheet: { StyleSheetData: styleData } }], RunLengthArray: [text.length], IsJoinable: 2
+        },
+        GridInfo: { GridIsOn: false, ShowGrid: false, GridSize: 18, GridLeading: 22, GridColor: { Type: 1, Values: [0, 0, 0, 1] }, GridLeadingFillColor: { Type: 1, Values: [0, 0, 0, 1] }, AlignLineHeightToGridFlags: false },
+        AntiAlias: 4, UseFractionalGlyphWidths: true,
+        Rendered: { Version: 1, Shapes: { WritingDirection: 0, Children: [{ ShapeType: 0, Procession: 0, Lines: { WritingDirection: 0, Children: [] }, Cookie: { Photoshop: { ShapeType: 0, PointBase: [0, 0], Base: { ShapeType: 0, TransformPoint0: [1, 0], TransformPoint1: [0, 1], TransformPoint2: [0, 0] } } } }] } }
+      },
+      ResourceDict: resources,
+      DocumentResources: resources
+    });
+  }
+
+  function tyshBlock(T) {
+    var size = T.size || 48, boxW = T.width || 400, nLines = (T.lines && T.lines.length) || 1;
+    var left = T.align === "right" ? -boxW : (T.align === "center" ? -boxW / 2 : 0);
+    var top = -size, right = left + boxW, bottom = (T.leading || size * 1.2) * (nLines - 1) + size * 0.3;
+    var plainText = (T.lines || [""]).join("\r") + "\r";
+    var boxItems = function (cls) {
+      return vObjc(cls, [["Left", "UntF", vUnit(left)], ["Top ", "UntF", vUnit(top)], ["Rght", "UntF", vUnit(right)], ["Btom", "UntF", vUnit(bottom)]]);
+    };
+    var w = new Writer();
+    w.u16(1);                                                          // TySh version
+    [1, 0, 0, 1, T.x, T.y].forEach(function (n) { w.f64(n); });      // transform: xx xy yx yy tx ty (tx, ty = text origin)
+    w.u16(50);                                                         // text version
+    w.u32(16);                                                         // descriptor version
+    dDescr(w, "TxLr", [
+      ["Txt ", "TEXT", vText(plainText)],
+      ["textGridding", "enum", vEnum("textGridding", "None")],
+      ["Ornt", "enum", vEnum("Ornt", "Hrzn")],
+      ["AntA", "enum", vEnum("Annt", "antiAliasSmooth")],
+      ["bounds", "Objc", boxItems("bounds")],
+      ["boundingBox", "Objc", boxItems("boundingBox")],
+      ["TextIndex", "long", vLong(0)],
+      ["EngineData", "tdta", vRaw(textEngine(T))]
+    ]);
+    w.u16(1);                                                          // warp version
+    w.u32(16);
+    dDescr(w, "warp", [
+      ["warpStyle", "enum", vEnum("warpStyle", "warpNone")],
+      ["warpValue", "doub", vDoub(0)],
+      ["warpPerspective", "doub", vDoub(0)],
+      ["warpPerspectiveOther", "doub", vDoub(0)],
+      ["warpRotate", "enum", vEnum("Ornt", "Hrzn")]
+    ]);
+    w.f64(left); w.f64(top); w.f64(right); w.f64(bottom);              // text bounds
+    var body = w.toUint8Array(), padN = pad(body.length, 4);
+    var out = new Writer();
+    out.ascii("8BIM"); out.ascii("TySh"); out.u32(body.length + padN); out.bytes(body); out.zeros(padN);
+    return out.toUint8Array();
+  }
+
   function planar(rgba, count, channel) {
     var out = new Uint8Array(count);
     for (var i = 0; i < count; i++) out[i] = rgba[i * 4 + channel];
@@ -87,11 +252,13 @@
       rec.u8(0);         // flags (visible)
       rec.u8(0);         // filler
       var name = pascalName(L.name), luni = luniBlock(L.name);
-      rec.u32(4 + 4 + name.length + luni.length);
+      var tysh = L.text ? tyshBlock(L.text) : null;
+      rec.u32(4 + 4 + name.length + luni.length + (tysh ? tysh.length : 0));
       rec.u32(0);        // layer mask data
       rec.u32(0);        // blending ranges
       rec.bytes(name);
       rec.bytes(luni);
+      if (tysh) rec.bytes(tysh);
       for (var k = 0; k < 4; k++) {
         chan.u16(0);     // raw
         chan.bytes(planar(L.rgba, count, k === 3 ? 3 : k));
