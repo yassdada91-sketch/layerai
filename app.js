@@ -8,6 +8,8 @@
   var LIMIT_FALLBACK_MSG = "وصلتي للحد اليومي. جرّب غدا.";
   var currentSpec = null;
   var currentLook = ""; // value of the "style" select (photo, painting, cartoon...)
+  // Add ?live to the address to get REAL editable text layers (Photoshop type layers) for plain headline blocks.
+  var LIVE_TEXT = /[?&](?:live|text)\b/.test(window.location.search);   // ?live or ?text at the end of the address: real text layers in the PSD
 
   // Text added to the picture prompt for each style (the Worker reads it from the "styleHint" field).
   var STYLE_HINTS = {
@@ -307,12 +309,12 @@
         // Step 1 (magenta): remove light pink haze / glow CONNECTED to the transparent background (the generator leaves a
         // lighter pink cloud around the object that is too far from pure magenta to be keyed out). Dark burgundy reflections
         // inside a black object are not "pinkish" by these rules, so they are not reached. If the removal would eat more than
-        // 35% of what is left, it is undone (a pink object).
+        // 15% of what is left, it is undone (a pink object).
         var mgSeen = new Uint8Array(n), mgSt = new Int32Array(n), mgSp = 0, mgRem = new Int32Array(n), mgRc = 0;
         for (var mgI = 0; mgI < n; mgI++) if (d[mgI * 4 + 3] < 40) { mgSeen[mgI] = 1; mgSt[mgSp++] = mgI; }
         var mgPink = function (ix) {
           var o8 = ix * 4, r8 = d[o8], g8 = d[o8 + 1], b8 = d[o8 + 2], lo8 = Math.min(r8, b8), m8 = lo8 - g8;
-          return (m8 > 20 && lo8 > 150) || (m8 > 45 && lo8 > 90) || m8 > 90;
+          return (m8 > 40 && lo8 > 150) || m8 > 90;
         };
         var mgSpread = function (ix) {
           if (!mgSeen[ix] && d[ix * 4 + 3] >= 40 && mgPink(ix)) { mgSeen[ix] = 1; mgRem[mgRc++] = ix; mgSt[mgSp++] = ix; }
@@ -324,7 +326,7 @@
         }
         var mgNb = 0;
         for (var mgK = 0; mgK < n; mgK++) if (d[mgK * 4 + 3] >= 40) mgNb++;
-        if (mgNb - mgRc >= n * 0.03 && mgRc < mgNb * 0.35) {
+        if (mgNb - mgRc >= n * 0.03 && mgRc < mgNb * 0.15) {
           for (var mgQ = 0; mgQ < mgRc; mgQ++) { d[mgRem[mgQ] * 4 + 3] = 0; alpha[mgRem[mgQ]] = 0; }
         }
       }
@@ -346,9 +348,10 @@
             }
           } else {
             var lo = Math.min(r, bl);
-            // Magenta-hued pixels anywhere (the shadow the generator leaves on the screen, dark purple/red patches): drop them.
+            // Magenta-hued pixels CLOSE TO THE SCREEN COLOUR or near the edge (the shadow the generator leaves on the screen): drop them.
+            // Dark purple pixels far from the screen colour (a black glass bottle, a dark bag) are part of the object and are kept.
             // Real objects almost never have red AND blue both well above green; pink cups (green high) and leaves are safe.
-            if (lo > 25 && lo > gg * 1.6 + 15) { d[o + 3] = 0; continue; }
+            if (lo > 25 && lo > gg * 1.6 + 15 && (near[j] || dist(o) < 190)) { d[o + 3] = 0; continue; }
             if (lo > gg && (near[j] || d[o + 3] < 255)) {
               var ex = lo - gg;
               if (near[j] && ex > 60 && gg < 100) d[o + 3] = 0;          // pure magenta near the edge: drop it (pink object parts are kept)
@@ -526,6 +529,7 @@
       if (probe.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t;
     });
     if (line) lines.push(line);
+    e._lines = lines.slice();   // remembered for the editable text layer (?live)
     var lh = Math.round(size * 1.3), widest = 0;
     lines.forEach(function (l) { widest = Math.max(widest, probe.measureText(l).width); });
     var c = makeCanvas(Math.ceil(widest) + pad * 2, lines.length * lh + pad * 2), g = c.getContext("2d");
@@ -858,6 +862,61 @@
   }
 
   // --------------------------------------------------------------------- PSD
+  // Real text layer description for a "rich" block whose lines all share the same size / weight / colour (else null = stay raster).
+  function parseHex(h) {
+    var m = /^#([0-9a-f]{6})$/i.exec(String(h || ""));
+    if (!m) return null;
+    var n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  // Real, editable text layer for the PSD (only with ?live or ?text at the end of the address).
+  // The pixels of the layer stay as the preview; Photoshop / Photopea re-draw the text with the font when it is edited.
+  // Returns null when the element cannot be a text layer (effects, letter spacing...).
+  function textInfo(e, r, c) {
+    var lines = [], just = 0, x, y;
+    if (e.kind === "text") {
+      if (e.fx || !e._lines || (typeof e.opacity === "number" && e.opacity < 1)) return null;
+      var col = parseHex(e.text_color), size = e.font_size || 48, pad = textPad(e), rtl = /[\u0590-\u08FF]/.test(e.text || "");
+      if (!col) return null;
+      e._lines.forEach(function (t) { lines.push({ t: t, size: size, color: col, bold: true, leading: Math.round(size * 1.3) }); });
+      just = rtl ? 1 : 0;
+      x = rtl ? r.x + c.width - pad : r.x + pad;
+      y = r.y + pad + size * 0.9;
+    } else if (e.kind === "rich") {
+      var ls = e.lines || [], gap = e.gap == null ? 0.12 : e.gap;
+      var rtl2 = /[\u0590-\u08FF]/.test(ls.map(function (l) { return l.text; }).join(""));
+      for (var i = 0; i < ls.length; i++) {
+        var cl = parseHex(ls[i].color || "#222222");
+        if (!cl || !ls[i].text || ls[i].spacing) return null;
+        var sz = ls[i].size || 60;
+        lines.push({ t: String(ls[i].text), size: sz, color: cl, bold: (ls[i].weight || 700) >= 700, leading: Math.round(sz * (1 + gap)) });
+      }
+      if (!lines.length) return null;
+      var right = rtl2 || e.align === "right", ctr = e.align === "center";
+      just = ctr ? 2 : (right ? 1 : 0);
+      x = ctr ? e.x + e.w / 2 : (right ? e.x + e.w : e.x);
+      y = e.y + lines[0].size * 0.9;
+    } else return null;
+    return { lines: lines, justify: just, x: x, y: y, w: c.width };
+  }
+
+  function liveTextOf(e) {
+    if (!LIVE_TEXT || e.kind !== "rich" || !e.lines || !e.lines.length) return null;
+    var f = e.lines[0];
+    var same = e.lines.every(function (l) { return l.size === f.size && (l.weight || 700) === (f.weight || 700) && l.color === f.color && !l.spacing && l.text; });
+    if (!same) return null;
+    var all = e.lines.map(function (l) { return l.text; }).join("");
+    var rtl = /[\u0590-\u08FF]/.test(all);
+    var align = e.align === "center" ? "center" : ((rtl || e.align === "right") ? "right" : "left");
+    var size = f.size || 60, gap = e.gap == null ? 0.12 : e.gap;
+    return {
+      lines: e.lines.map(function (l) { return String(l.text); }), size: size, bold: (f.weight || 700) >= 600, color: f.color || "#222222",
+      align: align, x: Math.round(align === "center" ? e.x + e.w / 2 : (align === "right" ? e.x + e.w : e.x)),
+      y: Math.round(e.y + size * 0.9), leading: size * (1 + gap), width: e.w
+    };
+  }
+
   function specToPsd(spec) {
     currentSpec = spec;
     adaptBackgroundText(spec);
@@ -873,6 +932,15 @@
         return !dropIds[e.id] && !dropIds[String(e.id).replace(/^(gs_|sh_)/, "")] && !(e.of && dropIds[e.of]);
       });
     }
+    // Debug: open the page with ?debug at the end of the address to get the untouched generated picture of every cut-out
+    // as an extra layer under everything ("Original (debug) ..."), to see what the background removal did to it.
+    if (/[?&]debug\b/.test(window.location.search)) {
+      spec.elements.slice().forEach(function (e) {
+        if (e.kind === "image" && e.cutout && e._img) {
+          spec.elements.push({ id: "orig_" + e.id, kind: "image", name: "Original (debug) " + (e.name || e.id), x: 0, y: 0, w: e._img.width, h: e._img.height, z: -1, _img: e._img, radius: 0 });
+        }
+      });
+    }
     flowTextGroup(spec);
     var layers = spec.elements.slice().sort(function (a, b) { return (a.z || 0) - (b.z || 0); }).map(function (e) {
       var r = (RENDER[e.kind] || renderShape)(e), c = r.canvas;
@@ -880,7 +948,7 @@
       var data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
       var op = typeof e.opacity === "number" ? Math.max(0, Math.min(1, e.opacity)) : 1;
       if (op < 1) { for (var i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * op); }
-      return { name: e.name || e.id || "Layer", left: Math.round(r.x), top: Math.round(r.y), width: c.width, height: c.height, rgba: data };
+      return { name: e.name || e.id || "Layer", left: Math.round(r.x), top: Math.round(r.y), width: c.width, height: c.height, rgba: data, text: LIVE_TEXT ? textInfo(e, r, c) : null };
     });
     return PSD.buildPsd(spec.width, spec.height, layers);
   }
