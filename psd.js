@@ -1,7 +1,8 @@
 /* Minimal PSD writer (RGB, 8-bit, raw pixel layers, unicode layer names).
  * Layers: [{name, left, top, width, height, rgba: Uint8ClampedArray (non-premultiplied), text?}]  bottom -> top
- * Optional layer.text makes it a REAL editable text layer (Photoshop "TySh" block) that also keeps its pixels:
- *   text: { lines:[string], size:px, bold:bool, color:"#rrggbb", align:"left"|"center"|"right", x:anchor x, y:baseline y, leading:px, width:px }
+ * Optional layer.text makes the layer a real, editable text layer (the pixels stay as the preview):
+ *   text = { lines: [{t, size, color: [r,g,b], bold, leading?}], justify: 0 left | 1 right | 2 center,
+ *            x, y (origin of the first line: x depends on the justification, y is the first baseline), w }
  * No dependencies; works in browsers and Node.
  */
 (function (root) {
@@ -17,7 +18,7 @@
   };
   Writer.prototype.i32 = function (v) { this.u32(v < 0 ? v + 4294967296 : v); };
   Writer.prototype.f64 = function (v) {
-    var b = new ArrayBuffer(8); new DataView(b).setFloat64(0, v, false); this.bytes(new Uint8Array(b));
+    var b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v, false); this.bytes(b);
   };
   Writer.prototype.ascii = function (s) {
     var a = new Uint8Array(s.length);
@@ -59,164 +60,157 @@
     return w.toUint8Array();
   }
 
-  // ------------------------------------------------------------------ editable text layer (TySh)
-  // Photoshop "descriptor" helpers
-  function dKey(w, k) { if (k.length === 4) { w.u32(0); w.ascii(k); } else { w.u32(k.length); w.ascii(k); } }
-  function dUni(w, s) { w.u32(s.length + 1); for (var i = 0; i < s.length; i++) w.u16(s.charCodeAt(i)); w.u16(0); }
-  // items: [[key, osType, writerFn]]
-  function dDescr(w, cls, items) {
-    w.u32(0);                // descriptor name (empty unicode string)
-    dKey(w, cls);
+  // ------------------------------------------------------------------ text layers ('TySh')
+  var FONT_REGULAR = "ArialMT", FONT_BOLD = "Arial-BoldMT"; // Arial has Arabic letters and exists in Photopea
+
+  // Engine data is a PostScript-like text; strings are UTF-16BE with a BOM, with ( ) \ escaped.
+  function esc(s) {
+    var out = "\u00fe\u00ff";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i), two = [c >> 8, c & 255];
+      for (var k = 0; k < 2; k++) {
+        if (two[k] === 0x28 || two[k] === 0x29 || two[k] === 0x5c) out += "\\";
+        out += String.fromCharCode(two[k]);
+      }
+    }
+    return "(" + out + ")";
+  }
+  function f(v) { var r = Math.round(v * 10000) / 10000, s = String(r); return s.indexOf(".") < 0 ? s + ".0" : s; }
+  // D("Key", value, "Key2", value2 ...) -> {d: "<<...>>"} ; a value is a string (scalar / array) or another D(...)
+  function D() {
+    var s = "<<\n";
+    for (var i = 0; i < arguments.length; i += 2) {
+      var v = arguments[i + 1];
+      if (v && typeof v === "object") s += "/" + arguments[i] + "\n" + v.d + "\n";
+      else s += "/" + arguments[i] + " " + v + "\n";
+    }
+    return { d: s + ">>" };
+  }
+  function list(items) { return "[\n" + items.map(function (x) { return x.d; }).join("\n") + "\n]"; }
+
+  function paraProps(just) {
+    return D("Justification", String(just), "FirstLineIndent", "0.0", "StartIndent", "0.0", "EndIndent", "0.0",
+      "SpaceBefore", "0.0", "SpaceAfter", "0.0", "AutoHyphenate", "false", "HyphenatedWordSize", "6",
+      "PreHyphen", "2", "PostHyphen", "2", "ConsecutiveHyphens", "8", "Zone", "36.0",
+      "WordSpacing", "[ 0.8 1.0 1.33 ]", "LetterSpacing", "[ 0.0 0.0 0.0 ]", "GlyphSpacing", "[ 1.0 1.0 1.0 ]",
+      "AutoLeading", "1.2", "LeadingType", "0", "Hanging", "false", "Burasagari", "false",
+      "KinsokuOrder", "0", "EveryLineComposer", "false");
+  }
+  function styleData(fontIdx, size, color, leading) {
+    var col = "[ 1.0 " + f(color[0] / 255) + " " + f(color[1] / 255) + " " + f(color[2] / 255) + " ]";
+    return D("Font", String(fontIdx), "FontSize", f(size), "FauxBold", "false", "FauxItalic", "false",
+      "AutoLeading", leading ? "false" : "true", "Leading", f(leading || size * 1.2),
+      "HorizontalScale", "1.0", "VerticalScale", "1.0", "Tracking", "0", "AutoKerning", "true", "Kerning", "0",
+      "BaselineShift", "0.0", "FontCaps", "0", "FontBaseline", "0", "Underline", "false", "Strikethrough", "false",
+      "Ligatures", "true", "DLigatures", "false", "BaselineDirection", "2", "Tsume", "0.0", "StyleRunAlignment", "2",
+      "Language", "0", "NoBreak", "false", "FillColor", D("Type", "1", "Values", col),
+      "StrokeColor", D("Type", "1", "Values", "[ 1.0 0.0 0.0 0.0 ]"), "FillFlag", "true", "StrokeFlag", "false",
+      "FillFirst", "true", "YUnderline", "1", "OutlineWidth", "1.0", "CharacterDirection", "0",
+      "HindiNumbers", "false", "Kashida", "1", "DiacriticPos", "2");
+  }
+  function resources(just) {
+    return D("KinsokuSet", "[ ]", "MojiKumiSet", "[ ]", "TheNormalStyleSheet", "0", "TheNormalParagraphSheet", "0",
+      "ParagraphSheetSet", list([D("Name", esc("Normal RGB"), "DefaultStyleSheet", "0", "Properties", paraProps(just))]),
+      "StyleSheetSet", list([D("Name", esc("Normal RGB"), "StyleSheetData", styleData(0, 12, [0, 0, 0], 0))]),
+      "FontSet", list([
+        D("Name", esc(FONT_REGULAR), "Script", "0", "FontType", "1", "Synthetic", "0"),
+        D("Name", esc(FONT_BOLD), "Script", "0", "FontType", "1", "Synthetic", "0")]),
+      "SuperscriptSize", "0.583", "SuperscriptPosition", "0.333", "SubscriptSize", "0.583",
+      "SubscriptPosition", "0.333", "SmallCapSize", "0.7");
+  }
+
+  function engineData(t) {
+    var texts = t.lines.map(function (l) { return l.t; }), full = texts.join("\r") + "\r";
+    var paras = [], paraLens = [], styles = [], styleLens = [];
+    t.lines.forEach(function (l) {
+      paras.push(D("ParagraphSheet", D("DefaultStyleSheet", "0", "Properties", paraProps(t.justify)),
+        "Adjustments", D("Axis", "[ 1.0 0.0 1.0 ]", "XY", "[ 0.0 0.0 ]")));
+      paraLens.push(l.t.length + 1);
+      styles.push(D("StyleSheet", D("StyleSheetData", styleData(l.bold ? 1 : 0, l.size, l.color, l.leading))));
+      styleLens.push(l.t.length + 1);
+    });
+    var engine = D(
+      "Editor", D("Text", esc(full)),
+      "ParagraphRun", D("DefaultRunData", D("ParagraphSheet", D("DefaultStyleSheet", "0", "Properties", D()),
+        "Adjustments", D("Axis", "[ 1.0 0.0 1.0 ]", "XY", "[ 0.0 0.0 ]")),
+        "RunArray", list(paras), "RunLengthArray", "[ " + paraLens.join(" ") + " ]", "IsJoinable", "1"),
+      "StyleRun", D("DefaultRunData", D("StyleSheet", D("StyleSheetData", D())),
+        "RunArray", list(styles), "RunLengthArray", "[ " + styleLens.join(" ") + " ]", "IsJoinable", "2"),
+      "GridInfo", D("GridIsOn", "false", "ShowGrid", "false", "GridSize", "18.0", "GridLeading", "22.0",
+        "GridColor", D("Type", "1", "Values", "[ 0.0 0.0 0.0 1.0 ]"),
+        "GridLeadingFillColor", D("Type", "1", "Values", "[ 0.0 0.0 0.0 1.0 ]"), "AlignLineHeightToGridFlags", "false"),
+      "AntiAlias", "4", "UseFractionalGlyphWidths", "true",
+      "Rendered", D("Version", "1", "Shapes", D("WritingDirection", "0", "Children", list([
+        D("ShapeType", "0", "Procession", "0", "Lines", D("WritingDirection", "0", "Children", "[ ]"),
+          "Cookie", D("Photoshop", D("ShapeType", "0", "PointBase", "[ 0.0 0.0 ]",
+            "Base", D("ShapeType", "0", "TransformPoint0", "[ 1.0 0.0 ]", "TransformPoint1", "[ 0.0 1.0 ]",
+              "TransformPoint2", "[ 0.0 0.0 ]"))))]))));
+    var top = D("EngineDict", engine, "ResourceDict", resources(t.justify), "DocumentResources", resources(t.justify));
+    var s = "\n\n" + top.d + "\n", out = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
+    return out;
+  }
+
+  // Descriptor helpers
+  function uni(w, s, withNull) {
+    w.u32(s.length + (withNull ? 1 : 0));
+    for (var i = 0; i < s.length; i++) w.u16(s.charCodeAt(i));
+    if (withNull) w.u16(0);
+  }
+  function idv(w, s) { w.u32(s.length === 4 ? 0 : s.length); w.ascii(s); }
+  // items: [key, type, a, b]
+  function descriptor(w, classId, items) {
+    w.u32(0);                 // name (empty unicode string)
+    idv(w, classId);
     w.u32(items.length);
-    items.forEach(function (it) { dKey(w, it[0]); w.ascii(it[1]); it[2](w); });
-  }
-  function vText(s) { return function (w) { dUni(w, s); }; }
-  function vLong(n) { return function (w) { w.i32(n); }; }
-  function vDoub(n) { return function (w) { w.f64(n); }; }
-  function vUnit(n) { return function (w) { w.ascii("#Pxl"); w.f64(n); }; }
-  function vEnum(a, b) { return function (w) { dKey(w, a); dKey(w, b); }; }
-  function vObjc(cls, items) { return function (w) { dDescr(w, cls, items); }; }
-  function vRaw(u8) { return function (w) { w.u32(u8.length); w.bytes(u8); }; }
-
-  // EngineData: PDF-like text. Serializes a JS value (object / array / string / number / boolean) to bytes.
-  function engineBytes(root) {
-    var out = [];
-    function p(s) { for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 255); }
-    function str(s) {
-      out.push(0x28, 0xFE, 0xFF);
-      for (var i = 0; i < s.length; i++) {
-        var c = s.charCodeAt(i), hi = (c >> 8) & 255, lo = c & 255;
-        [hi, lo].forEach(function (b) { if (b === 0x28 || b === 0x29 || b === 0x5C) out.push(0x5C); out.push(b); });
-      }
-      out.push(0x29);
-    }
-    function num(n) { return Number.isInteger(n) ? String(n) : String(Math.round(n * 10000) / 10000); }
-    function val(v, ind) {
-      if (typeof v === "string") str(v);
-      else if (typeof v === "boolean") p(v ? "true" : "false");
-      else if (typeof v === "number") p(num(v));
-      else if (Array.isArray(v)) {
-        var complex = v.some(function (x) { return x && typeof x === "object"; });
-        if (!complex) { p("["); v.forEach(function (x) { p(" "); val(x, ind); }); p(" ]"); }
-        else {
-          p("[\n");
-          v.forEach(function (x) { p(ind + "\t"); val(x, ind + "\t"); p("\n"); });
-          p(ind + "]");
-        }
-      } else {
-        p("<<\n");
-        Object.keys(v).forEach(function (k) {
-          var x = v[k];
-          p(ind + "\t/" + k);
-          if (x && typeof x === "object" && !Array.isArray(x)) { p("\n" + ind + "\t"); val(x, ind + "\t"); }
-          else { p(" "); val(x, ind + "\t"); }
-          p("\n");
-        });
-        p(ind + ">>");
-      }
-    }
-    p("\n\n"); val(root, "");
-    return Uint8Array.from(out);
-  }
-
-  function hexRgb(h) {
-    var m = /^#?([0-9a-f]{6})$/i.exec(String(h || ""));
-    if (!m) return [0, 0, 0];
-    var n = parseInt(m[1], 16);
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-  }
-
-  function textEngine(T) {
-    var lines = T.lines && T.lines.length ? T.lines : [""], size = T.size || 48;
-    var text = lines.join("\r") + "\r";
-    var just = T.align === "right" ? 1 : (T.align === "center" ? 2 : 0);
-    var rgb = hexRgb(T.color), font = T.bold ? "Arial-BoldMT" : "ArialMT";
-    var leading = T.leading || size * 1.2;
-    var styleData = {
-      Font: 0, FontSize: size, FauxBold: false, FauxItalic: false, AutoLeading: false, Leading: leading,
-      HorizontalScale: 1, VerticalScale: 1, Tracking: 0, AutoKerning: true, Kerning: 0, BaselineShift: 0,
-      FontCaps: 0, FontBaseline: 0, Underline: false, Strikethrough: false, Ligatures: true, DLigatures: false,
-      BaselineDirection: 2, Tsume: 0, StyleRunAlignment: 2, Language: 0, NoBreak: false,
-      FillColor: { Type: 1, Values: [1, rgb[0], rgb[1], rgb[2]] },
-      StrokeColor: { Type: 1, Values: [1, 0, 0, 0] }, FillFlag: true, StrokeFlag: false, FillFirst: true,
-      YUnderline: 1, OutlineWidth: 1, CharacterDirection: 0, HindiNumbers: false, Kashida: 1, DiacriticPos: 2
-    };
-    var paraProps = {
-      Justification: just, FirstLineIndent: 0, StartIndent: 0, EndIndent: 0, SpaceBefore: 0, SpaceAfter: 0,
-      AutoHyphenate: false, HyphenatedWordSize: 6, PreHyphen: 2, PostHyphen: 2, ConsecutiveHyphens: 8, Zone: 36,
-      WordSpacing: [0.8, 1, 1.33], LetterSpacing: [0, 0, 0], GlyphSpacing: [1, 1, 1], AutoLeading: 1.2,
-      LeadingType: 0, Hanging: false, Burasagari: false, KinsokuOrder: 0, EveryLineComposer: false
-    };
-    var paraRuns = [], paraLens = [];
-    lines.forEach(function (l) {
-      paraRuns.push({ ParagraphSheet: { DefaultStyleSheet: 0, Properties: paraProps }, Adjustments: { Axis: [1, 0, 1], XY: [0, 0] } });
-      paraLens.push(l.length + 1);
-    });
-    var resources = {
-      KinsokuSet: [], MojiKumiSet: [],
-      TheNormalStyleSheet: 0, TheNormalParagraphSheet: 0,
-      ParagraphSheetSet: [{ Name: "Normal RGB", DefaultStyleSheet: 0, Properties: paraProps }],
-      StyleSheetSet: [{ Name: "Normal RGB", StyleSheetData: styleData }],
-      FontSet: [{ Name: font, Script: 0, FontType: 1, Synthetic: 0 }],
-      SuperscriptSize: 0.583, SuperscriptPosition: 0.333, SubscriptSize: 0.583, SubscriptPosition: 0.333, SmallCapSize: 0.7
-    };
-    return engineBytes({
-      EngineDict: {
-        Editor: { Text: text },
-        ParagraphRun: {
-          DefaultRunData: { ParagraphSheet: { DefaultStyleSheet: 0, Properties: {} }, Adjustments: { Axis: [1, 0, 1], XY: [0, 0] } },
-          RunArray: paraRuns, RunLengthArray: paraLens, IsJoinable: 1
-        },
-        StyleRun: {
-          DefaultRunData: { StyleSheet: { StyleSheetData: {} } },
-          RunArray: [{ StyleSheet: { StyleSheetData: styleData } }], RunLengthArray: [text.length], IsJoinable: 2
-        },
-        GridInfo: { GridIsOn: false, ShowGrid: false, GridSize: 18, GridLeading: 22, GridColor: { Type: 1, Values: [0, 0, 0, 1] }, GridLeadingFillColor: { Type: 1, Values: [0, 0, 0, 1] }, AlignLineHeightToGridFlags: false },
-        AntiAlias: 4, UseFractionalGlyphWidths: true,
-        Rendered: { Version: 1, Shapes: { WritingDirection: 0, Children: [{ ShapeType: 0, Procession: 0, Lines: { WritingDirection: 0, Children: [] }, Cookie: { Photoshop: { ShapeType: 0, PointBase: [0, 0], Base: { ShapeType: 0, TransformPoint0: [1, 0], TransformPoint1: [0, 1], TransformPoint2: [0, 0] } } } }] } }
-      },
-      ResourceDict: resources,
-      DocumentResources: resources
+    items.forEach(function (it) {
+      idv(w, it[0]); w.ascii(it[1]);
+      if (it[1] === "TEXT") uni(w, it[2], true);
+      else if (it[1] === "enum") { idv(w, it[2]); idv(w, it[3]); }
+      else if (it[1] === "long") w.i32(it[2]);
+      else if (it[1] === "doub") w.f64(it[2]);
+      else if (it[1] === "tdta") { w.u32(it[2].length); w.bytes(it[2]); }
     });
   }
 
-  function tyshBlock(T) {
-    var size = T.size || 48, boxW = T.width || 400, nLines = (T.lines && T.lines.length) || 1;
-    var left = T.align === "right" ? -boxW : (T.align === "center" ? -boxW / 2 : 0);
-    var top = -size, right = left + boxW, bottom = (T.leading || size * 1.2) * (nLines - 1) + size * 0.3;
-    var plainText = (T.lines || [""]).join("\r") + "\r";
-    var boxItems = function (cls) {
-      return vObjc(cls, [["Left", "UntF", vUnit(left)], ["Top ", "UntF", vUnit(top)], ["Rght", "UntF", vUnit(right)], ["Btom", "UntF", vUnit(bottom)]]);
+  // Older, simpler text description: one style for all lines ({lines:[string], size, bold, color:"#rrggbb", align, x, y, leading, width}).
+  function normalizeText(t) {
+    if (!t.lines.length || typeof t.lines[0] !== "string") return t;
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(t.color || "")), n = m ? parseInt(m[1], 16) : 0;
+    var col = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    return {
+      lines: t.lines.map(function (s) { return { t: s, size: t.size || 48, color: col, bold: !!t.bold, leading: t.leading }; }),
+      justify: t.align === "center" ? 2 : (t.align === "right" ? 1 : 0), x: t.x, y: t.y, w: t.width || t.w
     };
-    var w = new Writer();
-    w.u16(1);                                                          // TySh version
-    [1, 0, 0, 1, T.x, T.y].forEach(function (n) { w.f64(n); });      // transform: xx xy yx yy tx ty (tx, ty = text origin)
-    w.u16(50);                                                         // text version
-    w.u32(16);                                                         // descriptor version
-    dDescr(w, "TxLr", [
-      ["Txt ", "TEXT", vText(plainText)],
-      ["textGridding", "enum", vEnum("textGridding", "None")],
-      ["Ornt", "enum", vEnum("Ornt", "Hrzn")],
-      ["AntA", "enum", vEnum("Annt", "antiAliasSmooth")],
-      ["bounds", "Objc", boxItems("bounds")],
-      ["boundingBox", "Objc", boxItems("boundingBox")],
-      ["TextIndex", "long", vLong(0)],
-      ["EngineData", "tdta", vRaw(textEngine(T))]
+  }
+
+  function tyshBlock(L) {
+    var t = normalizeText(L.text), body = new Writer(), joined = t.lines.map(function (l) { return l.t; }).join("\r");
+    body.u16(1);
+    body.f64(1); body.f64(0); body.f64(0); body.f64(1); body.f64(t.x); body.f64(t.y);   // transform: origin of the text
+    body.u16(50); body.u32(16);
+    descriptor(body, "TxLr", [
+      ["Txt ", "TEXT", joined],
+      ["textGridding", "enum", "textGridding", "None"],
+      ["Ornt", "enum", "Ornt", "Hrzn"],
+      ["AntA", "enum", "Annt", "antiAliasSharp"],
+      ["TextIndex", "long", 0],
+      ["EngineData", "tdta", engineData(t)]
     ]);
-    w.u16(1);                                                          // warp version
-    w.u32(16);
-    dDescr(w, "warp", [
-      ["warpStyle", "enum", vEnum("warpStyle", "warpNone")],
-      ["warpValue", "doub", vDoub(0)],
-      ["warpPerspective", "doub", vDoub(0)],
-      ["warpPerspectiveOther", "doub", vDoub(0)],
-      ["warpRotate", "enum", vEnum("Ornt", "Hrzn")]
+    body.u16(1); body.u32(16);
+    descriptor(body, "warp", [
+      ["warpStyle", "enum", "warpStyle", "warpNone"],
+      ["warpValue", "doub", 0],
+      ["warpPerspective", "doub", 0],
+      ["warpPerspectiveOther", "doub", 0],
+      ["warpRotate", "enum", "Ornt", "Hrzn"]
     ]);
-    w.f64(left); w.f64(top); w.f64(right); w.f64(bottom);              // text bounds
-    var body = w.toUint8Array(), padN = pad(body.length, 4);
-    var out = new Writer();
-    out.ascii("8BIM"); out.ascii("TySh"); out.u32(body.length + padN); out.bytes(body); out.zeros(padN);
-    return out.toUint8Array();
+    var size = t.lines[0].size;
+    body.f64(0); body.f64(-size); body.f64(t.w || 100); body.f64(size * 0.4);              // text bounds
+    body.zeros(pad(body.len, 4));
+    var data = body.toUint8Array(), w = new Writer();
+    w.ascii("8BIM"); w.ascii("TySh"); w.u32(data.length); w.bytes(data);
+    return w.toUint8Array();
   }
 
   function planar(rgba, count, channel) {
@@ -252,13 +246,13 @@
       rec.u8(0);         // flags (visible)
       rec.u8(0);         // filler
       var name = pascalName(L.name), luni = luniBlock(L.name);
-      var tysh = L.text ? tyshBlock(L.text) : null;
-      rec.u32(4 + 4 + name.length + luni.length + (tysh ? tysh.length : 0));
+      var tysh = L.text ? tyshBlock(L) : new Uint8Array(0);
+      rec.u32(4 + 4 + name.length + luni.length + tysh.length);
       rec.u32(0);        // layer mask data
       rec.u32(0);        // blending ranges
       rec.bytes(name);
       rec.bytes(luni);
-      if (tysh) rec.bytes(tysh);
+      if (tysh.length) rec.bytes(tysh);
       for (var k = 0; k < 4; k++) {
         chan.u16(0);     // raw
         chan.bytes(planar(L.rgba, count, k === 3 ? 3 : k));
